@@ -18,10 +18,10 @@ STORAGE_COST_PER_GB_MONTH = {
 }
 
 
-def estimate_cost(filepath: str):
+def estimate_cost(filepath: str, max_bytes: int = 1_000_000):
     try:
         with open(filepath, "rb") as f:
-            data = f.read()
+            data = f.read(max_bytes)
     except Exception:
         return None
 
@@ -53,6 +53,7 @@ if __name__ == "__main__":
     df["monthly_storage_cost_usd"] = (df["object_size"] / (1024 ** 3)) * STORAGE_COST_PER_GB_MONTH["hot"]
 
     out_path = os.path.join("data", "processed", "objects_with_cost.parquet")
+    os.makedirs(os.path.dirname(out_path), exist_ok=True)
     df.to_parquet(out_path)
     print(df[["compression_ratio", "compute_time_sec", "monthly_storage_cost_usd"]].describe())
     print(f"Saved to {out_path}")

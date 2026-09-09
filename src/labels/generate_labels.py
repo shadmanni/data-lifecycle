@@ -38,6 +38,7 @@ if __name__ == "__main__":
     print(df["lifecycle_label"].value_counts())
 
     out_path = os.path.join("data", "labels", "objects_dataset.parquet")
+    os.makedirs(os.path.dirname(out_path), exist_ok=True)
     df.to_parquet(out_path)
     print(f"Final labeled dataset saved to {out_path}")
     

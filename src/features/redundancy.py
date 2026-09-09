@@ -28,6 +28,7 @@ if __name__ == "__main__":
     df = pd.read_parquet(in_path)
     df = compute_redundancy_scores(df)
     out_path = os.path.join("data", "processed", "objects_with_redundancy.parquet")
+    os.makedirs(os.path.dirname(out_path), exist_ok=True)
     df.to_parquet(out_path)
     print(df[["object_id", "redundancy_score"]].describe())
     print(f"Saved to {out_path}")

@@ -54,6 +54,7 @@ if __name__ == "__main__":
     df["num_dependents"] = df["object_id"].map(lambda oid: in_degrees.get(oid, 0))
 
     out_path = os.path.join("data", "processed", "objects_with_deps.parquet")
+    os.makedirs(os.path.dirname(out_path), exist_ok=True)
     df.to_parquet(out_path)
 
     with open(os.path.join("data", "processed", "dependency_graph.gpickle"), "wb") as f:

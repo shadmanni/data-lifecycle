@@ -50,12 +50,12 @@ def hash_chunk(data: bytes) -> str:
     return hashlib.sha1(data).hexdigest()
 
 
-def chunk_file(filepath: str, avg_size: int = 8192, min_size: int = 2048, max_size: int = 16384):
+def chunk_file(filepath: str, avg_size: int = 8192, min_size: int = 2048, max_size: int = 16384, max_bytes_to_read: int = 512_000):
     """
-    Reads a file and returns a list of chunk hashes.
+    Reads a file (up to max_bytes_to_read) and returns a list of chunk hashes.
     """
     with open(filepath, "rb") as f:
-        data = f.read()
+        data = f.read(max_bytes_to_read)
     boundaries = gear_chunks(data, avg_size, min_size, max_size)
     return [hash_chunk(data[s:e]) for (s, e) in boundaries]
 

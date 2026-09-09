@@ -50,8 +50,8 @@ def train():
     y_pred = clf.predict(X_test)
 
     print("=== Classification report ===")
-    print(classification_report(y_test, y_pred, target_names=le.classes_))
-    print("Macro F1:", f1_score(y_test, y_pred, average="macro"))
+    print(classification_report(y_test, y_pred, target_names=le.classes_, zero_division=0))
+    print("Macro F1:", f1_score(y_test, y_pred, average="macro", zero_division=0))
 
     cm = confusion_matrix(y_test, y_pred)
     fig, ax = plt.subplots(figsize=(6, 5))
@@ -69,12 +69,14 @@ def train():
     plt.tight_layout()
     os.makedirs("models", exist_ok=True)
     plt.savefig(os.path.join("models", "confusion_matrix.png"))
+    plt.close(fig)
     print("Saved confusion matrix plot to models/confusion_matrix.png")
 
     fig2, ax2 = plt.subplots(figsize=(6, 5))
     xgb.plot_importance(clf, ax=ax2)
     plt.tight_layout()
     plt.savefig(os.path.join("models", "feature_importance.png"))
+    plt.close(fig2)
     print("Saved feature importance plot to models/feature_importance.png")
 
     joblib.dump(clf, os.path.join("models", "lifecycle_policy_model.pkl"))
