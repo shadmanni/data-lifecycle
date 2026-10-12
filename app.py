@@ -11,6 +11,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 import streamlit as st
+from sklearn.metrics import confusion_matrix
 
 from src.training.models import (
     MODEL_REGISTRY,
@@ -23,6 +24,7 @@ from src.evaluation.evaluate import (
     ACTION_SAVINGS_FACTOR,
     compute_metrics,
     get_feature_importances,
+    generate_classification_report_df,
 )
 
 # -----------------------------------------------------------------------------
@@ -47,14 +49,22 @@ ALL_MODEL_NAMES = list(MODEL_REGISTRY.keys())
 # -----------------------------------------------------------------------------
 # Data & Cache Initialization
 # -----------------------------------------------------------------------------
-@st.cache_data
 def get_cached_dataset():
-    """Load train and test parquet data with Streamlit data caching."""
+    """Load train and test parquet data with file-modification cache invalidation."""
+    train_path = os.path.join("data", "labels", "train.parquet")
+    test_path = os.path.join("data", "labels", "test.parquet")
+    train_mtime = os.path.getmtime(train_path) if os.path.exists(train_path) else 0.0
+    test_mtime = os.path.getmtime(test_path) if os.path.exists(test_path) else 0.0
+    return _load_dataset_cached(train_mtime, test_mtime)
+
+
+@st.cache_data
+def _load_dataset_cached(train_mtime: float, test_mtime: float):
     return load_dataset()
 
 
 def initialize_session_state():
-    """Initialize session state storage for trained models and metrics."""
+    """Initialize session state storage for trained models, metrics, and classification reports."""
     if "trained_models" not in st.session_state:
         st.session_state.trained_models = {}
     if "model_metrics" not in st.session_state:
@@ -63,6 +73,8 @@ def initialize_session_state():
         st.session_state.model_errors = {}
     if "label_encoder" not in st.session_state:
         st.session_state.label_encoder = None
+    if "classification_reports" not in st.session_state:
+        st.session_state.classification_reports = {}
 
     # Load existing default XGBoost model from disk if available
     if not st.session_state.trained_models and os.path.exists(DEFAULT_MODEL_PATH) and os.path.exists(DEFAULT_ENCODER_PATH):
@@ -359,6 +371,30 @@ with tab_compare:
 with tab_diagnostics:
     st.subheader("Model Diagnostics & Explainability")
     
+    available_models = list(st.session_state.trained_models.keys())
+    untrained_models = [m for m in ALL_MODEL_NAMES if m not in available_models]
+    if untrained_models:
+        with st.expander("➕ Train another model to inspect directly", expanded=False):
+            col_add1, col_add2 = st.columns([3, 1])
+            with col_add1:
+                model_to_quick_train = st.selectbox("Select model to train", options=untrained_models, key="quick_train_sel")
+            with col_add2:
+                st.write("")
+                if st.button(f"Train {model_to_quick_train}", width="stretch", key="quick_train_btn"):
+                    with st.spinner(f"Training {model_to_quick_train}..."):
+                        clf_qt, metrics_qt, le_qt = train_single_model(
+                            model_name=model_to_quick_train,
+                            hyperparams=model_hyperparams.get(model_to_quick_train, {}),
+                            train_df=train_df,
+                            test_df=test_df,
+                            le=st.session_state.label_encoder,
+                            task_type="classification",
+                        )
+                        st.session_state.trained_models[model_to_quick_train] = clf_qt
+                        st.session_state.model_metrics[model_to_quick_train] = metrics_qt
+                        st.session_state.label_encoder = le_qt
+                        st.rerun()
+
     inspect_model = st.selectbox(
         "Select Model to Inspect",
         options=list(st.session_state.trained_models.keys()),
@@ -367,6 +403,11 @@ with tab_diagnostics:
 
     clf_selected = st.session_state.trained_models[inspect_model]
     metrics_selected = st.session_state.model_metrics[inspect_model]
+
+    # Recompute predictions dynamically on the current test set
+    X_test_current = test_df[FEATURE_COLUMNS]
+    y_test_current = le.transform(test_df["lifecycle_label"])
+    y_pred_current = clf_selected.predict(X_test_current)
 
     diag_col1, diag_col2 = st.columns(2)
 
@@ -377,7 +418,7 @@ with tab_diagnostics:
             clf=clf_selected,
             feature_names=FEATURE_COLUMNS,
             X_sample=test_df[FEATURE_COLUMNS],
-            y_sample=le.transform(test_df["lifecycle_label"]),
+            y_sample=y_test_current,
         )
         if fi_series is not None and not fi_series.empty:
             fi_df = fi_series.to_frame(name="Importance")
@@ -385,10 +426,10 @@ with tab_diagnostics:
         else:
             st.info("Feature importance not directly supported or available for this estimator structure.")
 
-    # 2. Confusion Matrix
+    # 2. Confusion Matrix (dynamically evaluated on current test set)
     with diag_col2:
         st.markdown(f"#### Confusion Matrix ({inspect_model})")
-        cm = metrics_selected["confusion_matrix"]
+        cm = confusion_matrix(y_test_current, y_pred_current, labels=range(len(le.classes_)))
         classes = list(le.classes_)
 
         fig, ax = plt.subplots(figsize=(6, 5))
@@ -413,29 +454,40 @@ with tab_diagnostics:
     st.markdown("---")
     st.markdown(f"#### Detailed Classification Report ({inspect_model})")
 
-    # Classification report breakdown table
-    cr_dict = metrics_selected["class_report"]
-    report_rows = []
-    for cls_name in le.classes_:
-        if cls_name in cr_dict:
-            report_rows.append({
-                "Action Class": cls_name,
-                "Precision": cr_dict[cls_name]["precision"],
-                "Recall": cr_dict[cls_name]["recall"],
-                "F1-Score": cr_dict[cls_name]["f1-score"],
-                "Support": int(cr_dict[cls_name]["support"]),
-            })
+    # Generate classification report from current model's predictions on current test set
+    report_df = generate_classification_report_df(
+        y_true=y_test_current,
+        y_pred=y_pred_current,
+        target_names=list(le.classes_),
+        labels=list(range(len(le.classes_))),
+    )
 
-    if report_rows:
-        report_df = pd.DataFrame(report_rows)
-        st.dataframe(
-            report_df.style.format({
-                "Precision": "{:.2%}",
-                "Recall": "{:.2%}",
-                "F1-Score": "{:.4f}",
-            }),
-            width="stretch",
-        )
+    # Store results per model in session state so each model keeps its own report
+    st.session_state.classification_reports[inspect_model] = report_df
+
+    # Sanity check: report accuracy matches dashboard metric for the same model
+    acc_row = report_df[report_df["Class / Metric"] == "accuracy"]
+    report_accuracy = float(acc_row["F1-Score"].iloc[0]) if not acc_row.empty else float(np.mean(y_test_current == y_pred_current))
+    cached_accuracy = float(metrics_selected["accuracy"])
+
+    san_col1, san_col2 = st.columns([3, 1])
+    with san_col1:
+        st.caption(f"Dynamically evaluated on current held-out test set ({len(test_df)} objects).")
+    with san_col2:
+        if abs(report_accuracy - cached_accuracy) < 1e-4:
+            st.success(f"Sanity Verified: {report_accuracy:.4f}", icon="✅")
+        else:
+            st.info(f"Report: {report_accuracy:.4f} | Leaderboard: {cached_accuracy:.4f}")
+
+    st.dataframe(
+        report_df.style.format({
+            "Precision": "{:.4f}",
+            "Recall": "{:.4f}",
+            "F1-Score": "{:.4f}",
+            "Support": "{:d}",
+        }),
+        width="stretch",
+    )
 
 
 # -----------------------------------------------------------------------------

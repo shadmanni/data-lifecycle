@@ -133,7 +133,13 @@ def compute_metrics(
     if test_df is not None and "monthly_storage_cost_usd" in test_df.columns:
         savings_data = calculate_storage_savings(test_df, y_pred_labels)
 
-    # Detailed classification report dictionary
+    # Detailed classification report dataframe & dictionary
+    class_report_df = generate_classification_report_df(
+        y_true=y_test,
+        y_pred=y_pred,
+        target_names=list(le.classes_),
+        labels=list(range(len(le.classes_))),
+    )
     class_report_dict = classification_report(
         y_test,
         y_pred,
@@ -161,8 +167,89 @@ def compute_metrics(
         "y_pred_labels": y_pred_labels,
         "y_proba": y_proba,
         "class_report": class_report_dict,
+        "class_report_df": class_report_df,
         "confusion_matrix": cm,
     }
+
+
+def generate_classification_report_df(
+    y_true: np.ndarray,
+    y_pred: np.ndarray,
+    target_names: Optional[List[str]] = None,
+    labels: Optional[List[int]] = None,
+) -> pd.DataFrame:
+    """
+    Generate a formatted classification report DataFrame containing per-class metrics
+    as well as summary rows ('accuracy', 'macro avg', 'weighted avg') with real class names.
+
+    Args:
+        y_true: Ground truth target values.
+        y_pred: Estimated target values from estimator.
+        target_names: Optional list of display class names matching labels.
+        labels: Optional list of label indices.
+
+    Returns:
+        DataFrame containing formatted columns ['Class / Metric', 'Precision', 'Recall', 'F1-Score', 'Support'].
+    """
+    report_dict = classification_report(
+        y_true,
+        y_pred,
+        labels=labels,
+        target_names=target_names,
+        output_dict=True,
+        zero_division=0,
+    )
+    rows: List[Dict[str, Any]] = []
+
+    # 1. Per-class rows
+    if target_names is not None:
+        for name in target_names:
+            if name in report_dict:
+                item = report_dict[name]
+                rows.append({
+                    "Class / Metric": name,
+                    "Precision": float(item["precision"]),
+                    "Recall": float(item["recall"]),
+                    "F1-Score": float(item["f1-score"]),
+                    "Support": int(item["support"]),
+                })
+    else:
+        for k, v in report_dict.items():
+            if isinstance(v, dict) and k not in ("macro avg", "weighted avg"):
+                rows.append({
+                    "Class / Metric": str(k),
+                    "Precision": float(v["precision"]),
+                    "Recall": float(v["recall"]),
+                    "F1-Score": float(v["f1-score"]),
+                    "Support": int(v["support"]),
+                })
+
+    total_support = sum(r["Support"] for r in rows)
+
+    # 2. Accuracy row
+    if "accuracy" in report_dict:
+        acc_val = float(report_dict["accuracy"])
+        rows.append({
+            "Class / Metric": "accuracy",
+            "Precision": acc_val,
+            "Recall": acc_val,
+            "F1-Score": acc_val,
+            "Support": total_support,
+        })
+
+    # 3. Macro avg & Weighted avg rows
+    for avg_key in ["macro avg", "weighted avg"]:
+        if avg_key in report_dict:
+            item = report_dict[avg_key]
+            rows.append({
+                "Class / Metric": avg_key,
+                "Precision": float(item["precision"]),
+                "Recall": float(item["recall"]),
+                "F1-Score": float(item["f1-score"]),
+                "Support": int(item["support"]),
+            })
+
+    return pd.DataFrame(rows)
 
 
 def get_feature_importances(
