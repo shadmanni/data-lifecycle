@@ -13,7 +13,7 @@ from chunking import chunk_file
 # Process source code and trace data extensions
 VALID_EXTENSIONS = {".c", ".h", ".cpp", ".hpp", ".py", ".md", ".txt", ".cc", ".csv"}
 
-RAW_DATA_DIR = os.path.join("data", "labels", "raw")
+RAW_DATA_DIR = os.path.join("data", "raw")
 
 
 def get_dataset_versions(raw_dir=RAW_DATA_DIR):

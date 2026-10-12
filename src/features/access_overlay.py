@@ -6,7 +6,7 @@ import os
 import numpy as np
 import pandas as pd
 
-AZURE_DIR = os.path.join("data", "labels", "raw", "azure_functions_2019")
+AZURE_DIR = os.path.join("data", "raw", "azure_functions_2019")
 
 
 def load_azure_invocation_distribution(azure_dir=AZURE_DIR, sample_size=5000):
