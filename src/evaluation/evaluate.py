@@ -3,8 +3,12 @@ Simulates applying the trained policy across the test set and reports
 storage savings vs. a "retain everything" baseline.
 """
 import os
+import sys
 import joblib
 import pandas as pd
+
+# Add project root to sys.path
+sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "../..")))
 
 FEATURE_COLUMNS = [
     "redundancy_score", "object_size", "object_age_days",

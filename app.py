@@ -1,7 +1,10 @@
+import os
+import sys
 import joblib
 import pandas as pd
 import streamlit as st
-import os
+
+sys.path.append(os.path.dirname(__file__))
 
 st.set_page_config(page_title="Cloud Data Lifecycle Advisor", layout="centered")
 st.title("Intelligent Cloud Data Lifecycle Optimization")
