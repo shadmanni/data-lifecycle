@@ -23,11 +23,11 @@ STORAGE_COST_PER_GB_MONTH = {
 }
 
 
-def estimate_cost(filepath: str, fallback_size: int = 100000):
-    if os.path.exists(filepath):
+def estimate_cost(filepath: str, max_bytes: int = 1_000_000, fallback_size: int = 100000):
+    if filepath and os.path.exists(filepath):
         try:
             with open(filepath, "rb") as f:
-                data = f.read()
+                data = f.read(max_bytes)
             start = time.perf_counter()
             compressed = zlib.compress(data, level=6)
             elapsed = time.perf_counter() - start
@@ -90,6 +90,7 @@ def process_costs(
         ).astype(np.float32)
 
         df = optimize_dtypes(df, verbose=True)
+        os.makedirs(os.path.dirname(out_path), exist_ok=True)
         df.to_parquet(out_path, compression="snappy", index=False)
         print(df[["compression_ratio", "compute_time_sec", "monthly_storage_cost_usd"]].describe())
         print(f"Saved {len(df):,} objects with cost estimates to {out_path}")

@@ -68,6 +68,7 @@ def gear_chunks_stream(
     max_size: int = 16384,
     buffer_size: int = 65536,
     compact: bool = False,
+    max_bytes_to_read: int = None,
 ) -> Generator[str, None, None]:
     """
     Stream-based Gear chunking without loading the full file or payload into memory.
@@ -79,11 +80,20 @@ def gear_chunks_stream(
 
     fp = 0
     current_chunk = bytearray()
+    total_read = 0
 
     while True:
-        buf = stream.read(buffer_size)
+        to_read = buffer_size
+        if max_bytes_to_read is not None:
+            remaining = max_bytes_to_read - total_read
+            if remaining <= 0:
+                break
+            to_read = min(buffer_size, remaining)
+
+        buf = stream.read(to_read)
         if not buf:
             break
+        total_read += len(buf)
 
         for byte_val in buf:
             current_chunk.append(byte_val)
@@ -106,13 +116,29 @@ def gear_chunks_stream(
         yield hash_chunk_compact(chunk_bytes) if compact else hash_chunk(chunk_bytes)
 
 
-def chunk_file(filepath: str, avg_size: int = 8192, min_size: int = 2048, max_size: int = 16384, compact: bool = False) -> List[str]:
+def chunk_file(
+    filepath: str,
+    avg_size: int = 8192,
+    min_size: int = 2048,
+    max_size: int = 16384,
+    compact: bool = False,
+    max_bytes_to_read: int = None,
+) -> List[str]:
     """
     Reads a file using buffered streaming and returns a list of chunk hashes.
     Memory-bounded: memory overhead is bounded to max_size + buffer_size regardless of file size.
     """
     with open(filepath, "rb") as f:
-        return list(gear_chunks_stream(f, avg_size=avg_size, min_size=min_size, max_size=max_size, compact=compact))
+        return list(
+            gear_chunks_stream(
+                f,
+                avg_size=avg_size,
+                min_size=min_size,
+                max_size=max_size,
+                compact=compact,
+                max_bytes_to_read=max_bytes_to_read,
+            )
+        )
 
 
 if __name__ == "__main__":

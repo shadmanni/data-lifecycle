@@ -40,7 +40,7 @@ def compute_redundancy_scores(df: pd.DataFrame, drop_chunk_hashes: bool = True) 
 
 
 def process_dataset(
-    in_path: str = None,
+    in_path: str = "data/processed/chunked_objects.parquet",
     shards_dir: str = "data/processed/shards",
     out_path: str = "data/processed/objects_with_redundancy.parquet",
     drop_chunk_hashes: bool = True,

@@ -185,11 +185,11 @@ def train(
         assert not np.isneginf(y_proba).any() and not np.isposinf(y_proba).any(), "ERROR: Infinite probability values!"
 
         # 5. Metrics & Reporting
-        macro_f1 = float(f1_score(y_test, y_pred, average="macro"))
-        report_dict = classification_report(y_test, y_pred, target_names=le.classes_, output_dict=True)
+        macro_f1 = float(f1_score(y_test, y_pred, average="macro", zero_division=0))
+        report_dict = classification_report(y_test, y_pred, target_names=le.classes_, output_dict=True, zero_division=0)
 
         print("\n=== Classification Report ===")
-        print(classification_report(y_test, y_pred, target_names=le.classes_))
+        print(classification_report(y_test, y_pred, target_names=le.classes_, zero_division=0))
         print(f"Macro F1 Score: {macro_f1:.4f}\n")
 
         # 6. Save Confusion Matrix Plot
@@ -209,7 +209,7 @@ def train(
         plt.tight_layout()
         cm_path = os.path.join(models_dir, "confusion_matrix.png")
         plt.savefig(cm_path)
-        plt.close()
+        plt.close(fig)
         print(f"Saved confusion matrix plot to {cm_path}")
 
         # 7. Feature Importance Plot
@@ -231,7 +231,7 @@ def train(
         plt.tight_layout()
         fi_path = os.path.join(models_dir, "feature_importance.png")
         plt.savefig(fi_path)
-        plt.close()
+        plt.close(fig2)
         print(f"Saved feature importance plot to {fi_path}")
 
         # 8. Save Artifacts

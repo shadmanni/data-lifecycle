@@ -79,6 +79,7 @@ def process_dependencies(
         df["num_dependents"] = df["object_id"].map(lambda oid: in_degrees.get(oid, 0)).astype("uint16")
 
         df = optimize_dtypes(df, verbose=True)
+        os.makedirs(os.path.dirname(out_path), exist_ok=True)
         df.to_parquet(out_path, compression="snappy", index=False)
 
         os.makedirs(os.path.dirname(graph_out), exist_ok=True)

@@ -5,6 +5,7 @@ Memory-optimized with categorical downcasting and batch assertion checks.
 """
 import os
 import sys
+import numpy as np
 import pandas as pd
 
 # Add project root to path
@@ -13,6 +14,7 @@ from src.utils.memory_opt import optimize_dtypes, MemoryTracker, validate_batch_
 
 
 def assign_label(row) -> str:
+    """Row-level label assignment function."""
     if row["access_freq_7d"] > 3:
         return "retain"
 
@@ -39,9 +41,9 @@ def generate_labels(
     out_path: str = "data/labels/objects_dataset.parquet",
 ):
     with MemoryTracker("Generate Lifecycle Labels"):
-        import numpy as np
         df = pd.read_parquet(in_path)
 
+        # High performance vectorized labeling
         cond_retain = df["access_freq_7d"] > 3
         cond_delete = (df["redundancy_score"] > 0.85) & (df["num_dependents"] == 0) & (df["object_age_days"] > 365) & (df["access_freq_90d"] == 0)
         cond_dedup = (df["redundancy_score"] > 0.6) & (df["num_dependents"] < 3)

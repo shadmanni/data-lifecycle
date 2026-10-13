@@ -13,15 +13,28 @@ from src.utils.memory_opt import optimize_dtypes, MemoryTracker
 
 
 def time_based_split(df: pd.DataFrame):
-    # synth_v1, synth_v2 = train ; synth_v3 = test (held-out "future" version)
-    train_df = df[df["version"].isin(["synth_v1", "synth_v2"])].copy()
-    test_df = df[df["version"] == "synth_v3"].copy()
+    """
+    Chronological time-based split:
+    Earlier versions = train set; held-out latest versions = test set.
+    """
+    test_versions = {"linux-6.4", "gcc-12.4.0", "synth_v3"}
+    present_versions = set(df["version"].unique())
+    matching_test_versions = present_versions.intersection(test_versions)
 
-    # If dataset has custom versions or single version, fallback to 80/20 time/index split
-    if len(train_df) == 0 or len(test_df) == 0:
-        split_idx = int(len(df) * 0.8)
-        train_df = df.iloc[:split_idx].copy()
-        test_df = df.iloc[split_idx:].copy()
+    if matching_test_versions and len(present_versions) > len(matching_test_versions):
+        test_df = df[df["version"].isin(matching_test_versions)].copy()
+        train_df = df[~df["version"].isin(matching_test_versions)].copy()
+    else:
+        unique_versions = sorted(present_versions)
+        if len(unique_versions) > 1:
+            split_idx = max(1, int(len(unique_versions) * 0.75))
+            train_vers = set(unique_versions[:split_idx])
+            test_vers = set(unique_versions[split_idx:])
+            train_df = df[df["version"].isin(train_vers)].copy()
+            test_df = df[df["version"].isin(test_vers)].copy()
+        else:
+            train_df = df.sample(frac=0.8, random_state=42).copy()
+            test_df = df.drop(train_df.index).copy()
 
     return train_df, test_df
 
@@ -39,6 +52,8 @@ def run_split(
         test_df = optimize_dtypes(test_df)
 
         print(f"Train: {len(train_df):,} rows | Test: {len(test_df):,} rows")
+        os.makedirs(os.path.dirname(train_out), exist_ok=True)
+        os.makedirs(os.path.dirname(test_out), exist_ok=True)
         train_df.to_parquet(train_out, compression="snappy", index=False)
         test_df.to_parquet(test_out, compression="snappy", index=False)
         print(f"Saved train split to {train_out}")
