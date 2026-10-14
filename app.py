@@ -5,7 +5,14 @@ Interactive Streamlit application for training, evaluating, and comparing
 """
 from typing import Any, Dict, List, Optional
 import os
+import sys
 import time
+
+# Ensure project root is in python path
+ROOT_DIR = os.path.dirname(os.path.abspath(__file__))
+if ROOT_DIR not in sys.path:
+    sys.path.insert(0, ROOT_DIR)
+
 import joblib
 import matplotlib.pyplot as plt
 import numpy as np
