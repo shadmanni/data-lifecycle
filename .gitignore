@@ -1,5 +1,17 @@
+<<<<<<< HEAD
 ﻿venv/
 data/raw/
 __pycache__/
 *.pyc
 .env
+=======
+venv/
+.venv/
+__pycache__/
+*.pyc
+.env
+.vscode/
+data/raw/
+data/processed/
+models/
+>>>>>>> 7d27035bf899a65efad0a7ec9761a206fa9bc702
