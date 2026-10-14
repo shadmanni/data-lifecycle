@@ -48,16 +48,20 @@ ACTION_SAVINGS_FACTOR = {
 }
 
 
-def calculate_storage_savings(test_df: pd.DataFrame, predicted_labels: np.ndarray) -> Dict[str, float]:
+USD_TO_INR_RATE = 95.0
+
+
+def calculate_storage_savings(test_df: pd.DataFrame, predicted_labels: np.ndarray, usd_to_inr: float = USD_TO_INR_RATE) -> Dict[str, float]:
     """
     Calculate cloud storage cost reduction resulting from predicted actions.
 
     Args:
         test_df: Test dataframe containing 'monthly_storage_cost_usd'.
         predicted_labels: String array or series of predicted policy actions.
+        usd_to_inr: Conversion multiplier from USD to Indian Rupees (INR).
 
     Returns:
-        Dictionary with baseline cost, optimized cost, and savings percentage.
+        Dictionary with baseline cost, optimized cost, savings percentage, and INR equivalents.
     """
     baseline_cost = float(test_df["monthly_storage_cost_usd"].sum())
     savings_factor = pd.Series(predicted_labels, index=test_df.index).map(ACTION_SAVINGS_FACTOR).fillna(0.0)
@@ -65,10 +69,17 @@ def calculate_storage_savings(test_df: pd.DataFrame, predicted_labels: np.ndarra
     optimized_cost = float(cost_after_action.sum())
     
     savings_pct = ((baseline_cost - optimized_cost) / baseline_cost * 100.0) if baseline_cost > 0 else 0.0
+    baseline_cost_inr = baseline_cost * usd_to_inr
+    optimized_cost_inr = optimized_cost * usd_to_inr
+    savings_inr = (baseline_cost - optimized_cost) * usd_to_inr
+
     return {
         "baseline_cost": baseline_cost,
         "optimized_cost": optimized_cost,
         "savings_pct": savings_pct,
+        "baseline_cost_inr": baseline_cost_inr,
+        "optimized_cost_inr": optimized_cost_inr,
+        "savings_inr": savings_inr,
     }
 
 
@@ -161,6 +172,9 @@ def compute_metrics(
         "savings_pct": savings_data.get("savings_pct", 0.0),
         "optimized_cost": savings_data.get("optimized_cost", 0.0),
         "baseline_cost": savings_data.get("baseline_cost", 0.0),
+        "optimized_cost_inr": savings_data.get("optimized_cost_inr", 0.0),
+        "baseline_cost_inr": savings_data.get("baseline_cost_inr", 0.0),
+        "savings_inr": savings_data.get("savings_inr", 0.0),
         "y_pred": y_pred,
         "y_pred_labels": y_pred_labels,
         "y_proba": y_proba,
@@ -345,9 +359,9 @@ def evaluate() -> None:
 
     savings = calculate_storage_savings(test_df, predicted_labels)
 
-    print(f"Baseline (retain everything) monthly cost: ${savings['baseline_cost']:.4f}")
-    print(f"Optimized (your policy) monthly cost:       ${savings['optimized_cost']:.4f}")
-    print(f"Estimated savings:                            {savings['savings_pct']:.1f}%")
+    print(f"Baseline (retain everything) monthly cost: INR {savings['baseline_cost_inr']:,.2f} (${savings['baseline_cost']:.4f} USD)")
+    print(f"Optimized (your policy) monthly cost:       INR {savings['optimized_cost_inr']:,.2f} (${savings['optimized_cost']:.4f} USD)")
+    print(f"Estimated savings:                            {savings['savings_pct']:.1f}% (INR {savings['savings_inr']:,.2f}/month saved)")
 
     print("\nAction distribution recommended by the model:")
     print(test_df["predicted_action"].value_counts())
