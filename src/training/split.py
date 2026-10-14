@@ -1,9 +1,15 @@
 """
 Splits data by dataset VERSION (older versions = train, newest version = test).
 This avoids the data leakage that a random split would cause.
+Memory-optimized with downcasting.
 """
 import os
+import sys
 import pandas as pd
+
+# Add project root to path
+sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "../..")))
+from src.utils.memory_opt import optimize_dtypes, MemoryTracker
 
 
 def time_based_split(df: pd.DataFrame):
@@ -33,13 +39,27 @@ def time_based_split(df: pd.DataFrame):
     return train_df, test_df
 
 
+def run_split(
+    in_path: str = "data/labels/objects_dataset.parquet",
+    train_out: str = "data/labels/train.parquet",
+    test_out: str = "data/labels/test.parquet",
+):
+    with MemoryTracker("Time-Based Train/Test Split"):
+        df = pd.read_parquet(in_path)
+        train_df, test_df = time_based_split(df)
+
+        train_df = optimize_dtypes(train_df)
+        test_df = optimize_dtypes(test_df)
+
+        print(f"Train: {len(train_df):,} rows | Test: {len(test_df):,} rows")
+        os.makedirs(os.path.dirname(train_out), exist_ok=True)
+        os.makedirs(os.path.dirname(test_out), exist_ok=True)
+        train_df.to_parquet(train_out, compression="snappy", index=False)
+        test_df.to_parquet(test_out, compression="snappy", index=False)
+        print(f"Saved train split to {train_out}")
+        print(f"Saved test split to {test_out}")
+    return train_df, test_df
+
+
 if __name__ == "__main__":
-    in_path = os.path.join("data", "labels", "objects_dataset.parquet")
-    df = pd.read_parquet(in_path)
-    train_df, test_df = time_based_split(df)
-    print(f"Train: {len(train_df)} rows | Test: {len(test_df)} rows")
-    
-    out_dir = os.path.join("data", "labels")
-    os.makedirs(out_dir, exist_ok=True)
-    train_df.to_parquet(os.path.join(out_dir, "train.parquet"))
-    test_df.to_parquet(os.path.join(out_dir, "test.parquet"))
+    run_split()
