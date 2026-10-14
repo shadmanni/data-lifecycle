@@ -1,86 +1,40 @@
 """
 src/redundancy/build_object_table.py
 --------------------------------------
-Walks the real kernel_versions and gcc_versions folders, chunks every
-source file with FastCDC, and computes REAL redundancy features:
-
-  - redundancy_score : fraction of a file's chunks that also appear
-                        somewhere else in the same dataset (0-1)
-  - exact_duplicate   : 1 if this file's full content is byte-identical
-                        to another file anywhere in the dataset
-  - version_count     : how many of the N versions contain a file at
-                        this same relative path
-
+Walks the NASA Turbofan Jet Engine (CMaps) dataset:
+- Primary input path: /Users/shifashameer/Downloads/CMaps
+- Subsets / versions: FD001, FD002, FD003, FD004
+- Safely ignores non-data documentation (readme.txt, Damage Propagation Modeling.pdf)
+- Chunks every file / telemetry partition with FastCDC / Gear chunking
+- Computes real redundancy features:
+    * redundancy_score: fraction of chunks that appear in >=2 objects
+    * exact_duplicate: 1 if full content is byte-identical to another object
+    * version_count: how many versions contain this object type
 Output: data/processed/real_objects_raw.csv
-    one row per (dataset, version, relative_path) file found.
-
-Run:
-    python src/redundancy/build_object_table.py
 """
 
 import os
+import sys
 import hashlib
 import csv
 from pathlib import Path
 from collections import defaultdict
-from fastcdc import fastcdc
 
-# ---------------------------------------------------------------
-# CONFIG -- adjust these if your paths / limits differ
-# ---------------------------------------------------------------
-DATASETS = {
-    "linux_kernel": {
-        "root": Path(r"C:\research\kernel_versions"),
-        "versions": ["linux-6.1", "linux-6.2", "linux-6.3", "linux-6.4"],
-    },
-    "gcc": {
-        "root": Path(r"C:\research\gcc_versions"),
-        "versions": ["gcc-12.1.0", "gcc-12.2.0", "gcc-12.3.0", "gcc-12.4.0"],
-    },
-}
+# Ensure project root is in python path
+ROOT_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
+if ROOT_DIR not in sys.path:
+    sys.path.insert(0, ROOT_DIR)
 
-# Only chunk text/source-like files -- skip binaries, images, build
-# artifacts. Keeps runtime manageable on a CPU-only laptop.
-INCLUDE_EXTENSIONS = {
-    ".c", ".h", ".cc", ".cpp", ".hpp", ".py", ".s", ".S",
-    ".md", ".txt", ".rst", ".def", ".inc", ".y", ".l",
-}
-
-# Safety cap so a first run on a laptop finishes in a reasonable time.
-# Set to None to process everything (much slower, run overnight).
-MAX_FILES_PER_VERSION = 8000
-
-# Skip files bigger than this (bytes) -- huge generated files add
-# little research value and slow chunking down a lot.
-MAX_FILE_SIZE = 2 * 1024 * 1024  # 2 MB
-
-CHUNK_AVG = 4096
-CHUNK_MIN = 1024
-CHUNK_MAX = 16384
+from src.ingestion.chunking import chunk_file
+from src.ingestion.cmaps_loader import (
+    DEFAULT_CMAPS_DIR,
+    resolve_cmaps_dir,
+    is_valid_cmaps_data_file,
+    is_ignored_cmaps_file,
+    DATA_FILE_PATTERN,
+)
 
 OUTPUT_PATH = Path("data/processed/real_objects_raw.csv")
-
-
-def iter_source_files(version_root: Path, max_files=None):
-    """Yield (relative_path, full_path, size) for source-like files."""
-    count = 0
-    for dirpath, _, filenames in os.walk(version_root):
-        for fname in filenames:
-            ext = Path(fname).suffix
-            if ext not in INCLUDE_EXTENSIONS:
-                continue
-            full_path = Path(dirpath) / fname
-            try:
-                size = full_path.stat().st_size
-            except OSError:
-                continue  # broken symlink etc.
-            if size == 0 or size > MAX_FILE_SIZE:
-                continue
-            rel_path = full_path.relative_to(version_root).as_posix()
-            yield rel_path, full_path, size
-            count += 1
-            if max_files is not None and count >= max_files:
-                return
 
 
 def full_file_hash(path: Path) -> str:
@@ -91,74 +45,106 @@ def full_file_hash(path: Path) -> str:
 
 
 def chunk_hashes(path: Path):
-    """Return list of chunk hashes for a file using FastCDC."""
-    hashes = []
-    try:
-        with open(path, "rb") as f:
-            data = f.read()
-    except OSError:
-        return hashes
-    if not data:
-        return hashes
-    for chunk in fastcdc(data, avg_size=CHUNK_AVG, min_size=CHUNK_MIN,
-                          max_size=CHUNK_MAX, hf=hashlib.sha256):
-        hashes.append(chunk.hash)
-    return hashes
+    """Return list of chunk hashes for a file using pure-Python Gear/FastCDC chunker."""
+    return chunk_file(str(path))
 
 
-def process_dataset(name, root, versions):
+def process_cmaps(root_path: Path):
     """
-    Returns a list of row-dicts for this dataset, with redundancy_score
-    and exact_duplicate computed GLOBALLY across all versions of this
-    dataset (i.e. a chunk is "shared" if it appears in >1 file, whether
-    that's the same relative path in a different version, or a totally
-    different file).
+    Process CMaps files from root directory:
+    - Filters only valid data files (train, test, RUL)
+    - Safely ignores readme.txt, Damage Propagation Modeling.pdf, etc.
+    - Computes global chunk index, duplicate index, and version sharing
     """
-    print(f"\n=== Processing dataset: {name} ===")
+    print(f"\n=== Processing CMaps Dataset at: {root_path} ===")
+    if not root_path.exists():
+        print(f"  [WARN] CMaps directory not found at: {root_path}")
+        return []
 
-    # file_id -> metadata
     files_meta = {}
-    # chunk_hash -> set of file_ids containing it
     chunk_index = defaultdict(set)
-    # full_file_hash -> set of file_ids
     fullhash_index = defaultdict(set)
-    # relative_path -> set of versions it appears in
     path_versions = defaultdict(set)
 
-    for version in versions:
-        version_root = root / version
-        if not version_root.exists():
-            print(f"  [WARN] version folder missing: {version_root}")
+    ignored_files = []
+    data_files = []
+
+    for entry in sorted(os.listdir(root_path)):
+        full_p = root_path / entry
+        if not full_p.is_file():
             continue
-        n = 0
-        for rel_path, full_path, size in iter_source_files(version_root, MAX_FILES_PER_VERSION):
-            file_id = f"{name}::{version}::{rel_path}"
-            fhash = full_file_hash(full_path)
-            chashes = chunk_hashes(full_path)
+
+        if is_ignored_cmaps_file(entry):
+            ignored_files.append(entry)
+            continue
+
+        match = DATA_FILE_PATTERN.match(entry)
+        if match:
+            kind, subset = match.group(1).lower(), match.group(2).upper()
+            data_files.append((entry, full_p, kind, subset))
+
+    if ignored_files:
+        print(f"  Safely ignored {len(ignored_files)} non-data documentation file(s): {ignored_files}")
+
+    for entry, full_p, kind, subset in data_files:
+        file_id = f"CMaps::{subset}::{entry}"
+        size = full_p.stat().st_size
+        if size == 0:
+            continue
+
+        fhash = full_file_hash(full_p)
+        chashes = chunk_hashes(full_p)
+        if not chashes:
+            continue
+
+        files_meta[file_id] = {
+            "dataset": "CMaps",
+            "version": subset,
+            "relative_path": entry,
+            "size_bytes": size,
+            "full_hash": fhash,
+            "num_chunks": len(chashes),
+            "chunk_hashes": chashes,
+            "mtime": full_p.stat().st_mtime,
+        }
+        fullhash_index[fhash].add(file_id)
+        path_versions[entry].add(subset)
+        for ch in chashes:
+            chunk_index[ch].add(file_id)
+
+    # Also include partitioned engine units if present in data/processed/cmaps_partitions
+    partitions_dir = Path("data/processed/cmaps_partitions")
+    if partitions_dir.is_dir():
+        for pfile in sorted(partitions_dir.glob("*.txt")):
+            fname = pfile.name
+            subset = fname.split("_")[0] if "_" in fname else "FD001"
+            file_id = f"CMaps::{subset}::partition::{fname}"
+            size = pfile.stat().st_size
+            if size == 0:
+                continue
+            fhash = full_file_hash(pfile)
+            chashes = chunk_hashes(pfile)
             if not chashes:
                 continue
 
             files_meta[file_id] = {
-                "dataset": name,
-                "version": version,
-                "relative_path": rel_path,
+                "dataset": "CMaps",
+                "version": subset,
+                "relative_path": fname,
                 "size_bytes": size,
                 "full_hash": fhash,
                 "num_chunks": len(chashes),
                 "chunk_hashes": chashes,
-                "mtime": full_path.stat().st_mtime,
+                "mtime": pfile.stat().st_mtime,
             }
             fullhash_index[fhash].add(file_id)
-            path_versions[rel_path].add(version)
+            path_versions[fname].add(subset)
             for ch in chashes:
                 chunk_index[ch].add(file_id)
-            n += 1
-        print(f"  {version}: {n} files chunked")
 
-    print(f"  Total files in dataset: {len(files_meta)}")
-    print(f"  Total unique chunks seen: {len(chunk_index)}")
+    print(f"  Total CMaps objects processed: {len(files_meta)}")
+    print(f"  Total unique chunks indexed: {len(chunk_index)}")
 
-    # Now compute redundancy_score + exact_duplicate per file
     rows = []
     for file_id, meta in files_meta.items():
         chashes = meta["chunk_hashes"]
@@ -178,18 +164,18 @@ def process_dataset(name, root, versions):
             "version_count": version_count,
             "mtime": meta["mtime"],
         })
+
     return rows
 
 
 def main():
     OUTPUT_PATH.parent.mkdir(parents=True, exist_ok=True)
-    all_rows = []
-    for name, cfg in DATASETS.items():
-        rows = process_dataset(name, cfg["root"], cfg["versions"])
-        all_rows.extend(rows)
+    target_dir = Path(resolve_cmaps_dir())
+
+    all_rows = process_cmaps(target_dir)
 
     if not all_rows:
-        print("No rows produced -- check your dataset paths in the CONFIG section.")
+        print(f"No objects produced from {target_dir}. Check directory contents.")
         return
 
     fieldnames = list(all_rows[0].keys())
@@ -201,8 +187,8 @@ def main():
     print(f"\nSaved {len(all_rows)} rows to {OUTPUT_PATH}")
     avg_redundancy = sum(r["redundancy_score"] for r in all_rows) / len(all_rows)
     exact_dupes = sum(r["exact_duplicate"] for r in all_rows)
-    print(f"Average redundancy_score across all files: {avg_redundancy:.3f}")
-    print(f"Files flagged as exact duplicates: {exact_dupes} / {len(all_rows)}")
+    print(f"Average redundancy_score: {avg_redundancy:.4f}")
+    print(f"Exact duplicates detected: {exact_dupes} / {len(all_rows)}")
 
 
 if __name__ == "__main__":

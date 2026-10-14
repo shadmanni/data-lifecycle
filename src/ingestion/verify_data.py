@@ -1,49 +1,39 @@
 """
 verify_data.py
 ---------------
-Phase 1.3: Verify the 3 raw datasets downloaded so far are complete
-and not corrupted, before building any pipeline on top of them.
-
-Checks per dataset:
-  - Does the expected top-level folder/files exist?
-  - How many files total, and total size?
-  - A couple of spot-check files that MUST exist if extraction worked.
-
-Run this from inside lifecycle-project with the venv activated:
-    python src/ingestion/verify_data.py
+Verifies the NASA Turbofan Jet Engine (CMaps) dataset:
+- Direct primary path: /Users/shifashameer/Downloads/CMaps
+- Verifies all 4 training files: train_FD001.txt to train_FD004.txt
+- Verifies all 4 test files: test_FD001.txt to test_FD004.txt
+- Verifies all 4 RUL files: RUL_FD001.txt to RUL_FD004.txt
+- Confirms non-data files (readme.txt, Damage Propagation Modeling.pdf) are safely ignored
+- Verifies space-separated parsing, column structure (26 cols for train/test), and missing index handling for RUL
 """
 
 import os
+import sys
 from pathlib import Path
+import pandas as pd
 
-# Adjust these if your paths differ
-KERNEL_DIR = Path(r"C:\research\kernel_versions")
-GCC_DIR = Path(r"C:\research\gcc_versions")
-AZURE_DIR = Path(r"C:\research\azure_functions_2019")
+# Ensure project root is in python path
+ROOT_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
+if ROOT_DIR not in sys.path:
+    sys.path.insert(0, ROOT_DIR)
 
-KERNEL_VERSIONS = ["linux-6.1", "linux-6.2", "linux-6.3", "linux-6.4"]
-GCC_VERSIONS = ["gcc-12.1.0", "gcc-12.2.0", "gcc-12.3.0", "gcc-12.4.0"]
+from src.ingestion.cmaps_loader import (
+    DEFAULT_CMAPS_DIR,
+    resolve_cmaps_dir,
+    parse_cmaps_file,
+    parse_rul_file,
+    is_valid_cmaps_data_file,
+    is_ignored_cmaps_file,
+    CMAPS_COLUMNS,
+)
 
-
-def folder_stats(path: Path):
-    """Count files and total size (bytes) under a folder, recursively."""
-    if not path.exists():
-        return None
-    file_count = 0
-    total_size = 0
-    for root, dirs, files in os.walk(path):
-        for f in files:
-            fp = Path(root) / f
-            try:
-                total_size += fp.stat().st_size
-                file_count += 1
-            except OSError:
-                # broken symlinks etc. -- count but don't crash
-                file_count += 1
-    return file_count, total_size
+SUBSETS = ["FD001", "FD002", "FD003", "FD004"]
 
 
-def human_size(num_bytes):
+def human_size(num_bytes: int) -> str:
     for unit in ["B", "KB", "MB", "GB"]:
         if num_bytes < 1024:
             return f"{num_bytes:.1f}{unit}"
@@ -51,116 +41,123 @@ def human_size(num_bytes):
     return f"{num_bytes:.1f}TB"
 
 
-def check_kernel():
-    print("=" * 70)
-    print("LINUX KERNEL VERSIONS")
-    print("=" * 70)
-    all_ok = True
-    for v in KERNEL_VERSIONS:
-        vpath = KERNEL_DIR / v
-        stats = folder_stats(vpath)
-        if stats is None:
-            print(f"  [MISSING] {v} -- folder not found at {vpath}")
-            all_ok = False
-            continue
-        count, size = stats
-        # sanity check: a real kernel extraction should have well over
-        # 50,000 files and be at least a few hundred MB
-        ok = count > 50000 and size > 300 * 1024 * 1024
-        flag = "OK" if ok else "SUSPICIOUS"
-        print(f"  [{flag}] {v}: {count:,} files, {human_size(size)}")
-        # spot-check a file we know should exist
-        spot = vpath / "kernel" / "sched" / "core.c"
-        print(f"         spot-check kernel/sched/core.c exists: {spot.exists()}")
-        if not ok:
-            all_ok = False
-    return all_ok
+def check_cmaps_dataset(cmaps_dir: str = DEFAULT_CMAPS_DIR) -> bool:
+    print("=" * 75)
+    print("NASA TURBOFAN JET ENGINE (CMAPS) DATASET VERIFICATION")
+    print(f"Target Directory: {cmaps_dir}")
+    print("=" * 75)
 
-
-def check_gcc():
-    print("=" * 70)
-    print("GCC VERSIONS")
-    print("=" * 70)
-    all_ok = True
-    for v in GCC_VERSIONS:
-        vpath = GCC_DIR / v
-        stats = folder_stats(vpath)
-        if stats is None:
-            print(f"  [MISSING] {v} -- folder not found at {vpath}")
-            all_ok = False
-            continue
-        count, size = stats
-        # GCC source trees are large -- expect tens of thousands of files, GBs
-        ok = count > 30000 and size > 500 * 1024 * 1024
-        flag = "OK" if ok else "SUSPICIOUS"
-        print(f"  [{flag}] {v}: {count:,} files, {human_size(size)}")
-        spot = vpath / "gcc" / "gcc.cc"
-        print(f"         spot-check gcc/gcc.cc exists: {spot.exists()}")
-        if not ok:
-            all_ok = False
-    return all_ok
-
-
-def check_azure():
-    print("=" * 70)
-    print("AZURE FUNCTIONS 2019")
-    print("=" * 70)
-    if not AZURE_DIR.exists():
-        print(f"  [MISSING] folder not found at {AZURE_DIR}")
+    dir_path = Path(cmaps_dir)
+    if not dir_path.exists():
+        print(f"  [MISSING] Target directory not found at: {cmaps_dir}")
+        print("  Notice: When running on Shifa's Mac, ensure the dataset is in /Users/shifashameer/Downloads/CMaps.")
         return False
 
-    invocation_files = sorted(AZURE_DIR.glob("invocations_per_function_md.anon.d*.csv"))
-    duration_files = sorted(AZURE_DIR.glob("function_durations_percentiles.anon.d*.csv"))
-    memory_files = sorted(AZURE_DIR.glob("app_memory_percentiles.anon.d*.csv"))
+    all_ok = True
+    found_files = set(os.listdir(dir_path))
 
-    print(f"  Invocation-count files found: {len(invocation_files)} (expected 14)")
-    print(f"  Duration files found:         {len(duration_files)} (expected 14)")
-    print(f"  Memory files found:           {len(memory_files)} (expected 12)")
+    # 1. Check Non-Data / Ignored Files
+    doc_files = [f for f in found_files if is_ignored_cmaps_file(f)]
+    print(f"\n[1] Documentation & Ignored Files Check:")
+    print(f"  Detected non-data files: {doc_files}")
+    for doc in doc_files:
+        print(f"  [SAFELY IGNORED] {doc} -> correctly bypassed by data loader.")
 
-    all_ok = len(invocation_files) > 0  # at minimum we need the invocation files
-
-    if invocation_files:
-        first = invocation_files[0]
-        size = first.stat().st_size
-        print(f"  Sample file: {first.name}, size = {human_size(size)}")
-        ok = size > 1 * 1024 * 1024  # should be several MB at least
-        if not ok:
-            print("  [SUSPICIOUS] sample file seems too small")
+    # 2. Check Training Files
+    print(f"\n[2] Training Files (train_FD001.txt - train_FD004.txt):")
+    for sub in SUBSETS:
+        fname = f"train_{sub}.txt"
+        fpath = dir_path / fname
+        if not fpath.exists():
+            print(f"  [MISSING] {fname}")
             all_ok = False
-        else:
-            print("  [OK] sample file size looks reasonable")
+            continue
 
-        # peek at the header to confirm expected columns
-        with open(first, "r", encoding="utf-8", errors="ignore") as fh:
-            header = fh.readline().strip()
-        expected_cols = ["HashOwner", "HashApp", "HashFunction", "Trigger"]
-        has_expected = all(c in header for c in expected_cols)
-        print(f"  Header contains expected columns {expected_cols}: {has_expected}")
-        if not has_expected:
+        size = fpath.stat().st_size
+        try:
+            df = parse_cmaps_file(str(fpath))
+            n_rows, n_cols = df.shape
+            units = df["unit_number"].nunique()
+            print(
+                f"  [OK] {fname:<15}: {human_size(size):>8} | {n_rows:>6} rows | "
+                f"{n_cols} cols | {units:>3} engines"
+            )
+            # Verify 26 columns and correct headers
+            if n_cols != 26 or list(df.columns) != CMAPS_COLUMNS:
+                print(f"       [ERROR] Header mismatch or column count != 26 in {fname}")
+                all_ok = False
+        except Exception as e:
+            print(f"  [ERROR] Failed to parse {fname}: {e}")
             all_ok = False
-    else:
-        all_ok = False
+
+    # 3. Check Test Files
+    print(f"\n[3] Test Files (test_FD001.txt - test_FD004.txt):")
+    for sub in SUBSETS:
+        fname = f"test_{sub}.txt"
+        fpath = dir_path / fname
+        if not fpath.exists():
+            print(f"  [MISSING] {fname}")
+            all_ok = False
+            continue
+
+        size = fpath.stat().st_size
+        try:
+            df = parse_cmaps_file(str(fpath))
+            n_rows, n_cols = df.shape
+            units = df["unit_number"].nunique()
+            print(
+                f"  [OK] {fname:<15}: {human_size(size):>8} | {n_rows:>6} rows | "
+                f"{n_cols} cols | {units:>3} engines"
+            )
+            if n_cols != 26 or list(df.columns) != CMAPS_COLUMNS:
+                print(f"       [ERROR] Header mismatch or column count != 26 in {fname}")
+                all_ok = False
+        except Exception as e:
+            print(f"  [ERROR] Failed to parse {fname}: {e}")
+            all_ok = False
+
+    # 4. Check RUL Files (Handling missing index column)
+    print(f"\n[4] RUL Files (RUL_FD001.txt - RUL_FD004.txt):")
+    for sub in SUBSETS:
+        fname = f"RUL_{sub}.txt"
+        fpath = dir_path / fname
+        if not fpath.exists():
+            print(f"  [MISSING] {fname}")
+            all_ok = False
+            continue
+
+        size = fpath.stat().st_size
+        try:
+            rul_df = parse_rul_file(str(fpath))
+            n_rows, n_cols = rul_df.shape
+            has_unit_idx = "unit_number" in rul_df.columns
+            print(
+                f"  [OK] {fname:<15}: {human_size(size):>8} | {n_rows:>6} units | "
+                f"missing unit_number index supplied: {has_unit_idx}"
+            )
+            if not has_unit_idx or n_cols != 2:
+                print(f"       [ERROR] Missing index column resolution failed for {fname}")
+                all_ok = False
+        except Exception as e:
+            print(f"  [ERROR] Failed to parse {fname}: {e}")
+            all_ok = False
 
     return all_ok
 
 
 def main():
-    results = {
-        "Linux Kernel": check_kernel(),
-        "GCC": check_gcc(),
-        "Azure Functions 2019": check_azure(),
-    }
+    target_dir = resolve_cmaps_dir()
+    ok = check_cmaps_dataset(target_dir)
 
-    print("=" * 70)
-    print("SUMMARY")
-    print("=" * 70)
-    for name, ok in results.items():
-        print(f"  {name}: {'PASS' if ok else 'FAIL / NEEDS ATTENTION'}")
+    print("\n" + "=" * 75)
+    print("VERIFICATION SUMMARY")
+    print("=" * 75)
+    print(f"  CMaps Dataset at '{target_dir}': {'PASS' if ok else 'FAIL / ACTION NEEDED'}")
 
-    if all(results.values()):
-        print("\nAll datasets verified. Safe to proceed to Phase 2 (chunking / feature engineering).")
+    if ok:
+        print("\nAll CMaps files verified and parsed successfully.")
     else:
-        print("\nSome datasets failed verification -- check paths and re-extract if needed before proceeding.")
+        print("\nPlease ensure all CMaps files are downloaded to the target directory.")
 
 
 if __name__ == "__main__":

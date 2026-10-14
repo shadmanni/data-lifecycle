@@ -103,8 +103,10 @@ def train() -> None:
     train_df, test_df = load_dataset()
 
     le = LabelEncoder()
-    # Fit encoder preserving exact original behavior
-    y_train = le.fit_transform(train_df["lifecycle_label"])
+    # Fit encoder across both train and test to avoid missing class indexing
+    all_labels = pd.concat([train_df["lifecycle_label"], test_df["lifecycle_label"]]).unique()
+    le.fit(all_labels)
+    y_train = le.transform(train_df["lifecycle_label"])
     y_test = le.transform(test_df["lifecycle_label"])
 
     X_train = train_df[FEATURE_COLUMNS]
@@ -117,10 +119,10 @@ def train() -> None:
     y_pred = clf.predict(X_test)
 
     print("=== Classification report ===")
-    print(classification_report(y_test, y_pred, target_names=le.classes_, zero_division=0))
+    print(classification_report(y_test, y_pred, labels=range(len(le.classes_)), target_names=le.classes_, zero_division=0))
     print("Macro F1:", f1_score(y_test, y_pred, average="macro", zero_division=0))
 
-    cm = confusion_matrix(y_test, y_pred)
+    cm = confusion_matrix(y_test, y_pred, labels=range(len(le.classes_)))
     fig, ax = plt.subplots(figsize=(6, 5))
     im = ax.imshow(cm, cmap="Blues")
     ax.set_xticks(range(len(le.classes_)))

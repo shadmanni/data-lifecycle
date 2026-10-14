@@ -8,22 +8,30 @@ import pandas as pd
 
 
 def assign_label(row) -> str:
-    if row["access_freq_7d"] > 3:
-        return "retain"
-
-    if (row["redundancy_score"] > 0.85
-            and row["num_dependents"] == 0
-            and row["object_age_days"] > 365
-            and row["access_freq_90d"] == 0):
-        return "delete"
-
-    if row["redundancy_score"] > 0.6 and row["num_dependents"] < 3:
+    # 1. Deduplication: High chunk sharing across engine telemetry runs
+    if row.get("redundancy_score", 0.0) > 0.5 and row.get("num_dependents", 0) < 3:
         return "dedup"
 
-    if row["object_age_days"] > 180 and row["days_since_last_access"] > 90:
+    # 2. Deletion: Inactive, retired engine telemetry with no dependents and aged history
+    if (row.get("num_dependents", 0) == 0
+            and row.get("days_since_last_access", 0) > 80
+            and row.get("object_age_days", 0) > 250
+            and row.get("access_freq_90d", 0) < 5):
+        return "delete"
+
+    # 3. Archival: Infrequently accessed historical telemetry
+    if row.get("object_age_days", 0) > 120 and row.get("days_since_last_access", 0) > 40 and row.get("access_freq_7d", 0) <= 5:
         return "archive"
 
-    if row["redundancy_score"] < 0.3 and row["access_freq_30d"] > 0 and row["compression_ratio"] > 1.5:
+    # 4. Compression: Telemetry with strong compression ratio and moderate access
+    if row.get("compression_ratio", 1.0) > 2.0 and row.get("redundancy_score", 0.0) < 0.4:
+        return "compress"
+
+    # 5. Retention: Active, critical telemetry with recent accesses or dependent downstream models
+    if row.get("access_freq_7d", 0) > 10 or row.get("num_dependents", 0) >= 2:
+        return "retain"
+
+    if row.get("compression_ratio", 1.0) > 1.5:
         return "compress"
 
     return "retain"
@@ -41,4 +49,3 @@ if __name__ == "__main__":
     os.makedirs(os.path.dirname(out_path), exist_ok=True)
     df.to_parquet(out_path)
     print(f"Final labeled dataset saved to {out_path}")
-    

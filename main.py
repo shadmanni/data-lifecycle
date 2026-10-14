@@ -1,9 +1,10 @@
 """
 Main Execution Script: Cloud Data Lifecycle Optimization Pipeline
-Runs end-to-end pipeline on real local production datasets:
-- azure_functions_2019
-- gcc_versions
-- kernel_versions
+Runs end-to-end pipeline on NASA Turbofan Jet Engine (CMaps) dataset:
+- Primary input path: /Users/shifashameer/Downloads/CMaps
+- Subsets: FD001, FD002, FD003, FD004
+- Safely ignores documentation (readme.txt, Damage Propagation Modeling.pdf)
+- Handles space-separated parsing, column names, and missing index columns
 """
 import os
 import sys
@@ -14,6 +15,7 @@ ROOT_DIR = os.path.dirname(os.path.abspath(__file__))
 if ROOT_DIR not in sys.path:
     sys.path.insert(0, ROOT_DIR)
 
+from src.ingestion.cmaps_loader import resolve_cmaps_dir, DEFAULT_CMAPS_DIR
 from src.ingestion.build_objects import walk_and_chunk, get_dataset_versions
 from src.features.redundancy import compute_redundancy_scores
 from src.features.access_overlay import overlay_access_patterns
@@ -27,22 +29,28 @@ import pandas as pd
 import pickle
 
 
-def run_pipeline():
+def run_pipeline(cmaps_dir: str = None):
     total_start = time.time()
-    print("=" * 70)
-    print("Cloud Data Lifecycle Pipeline: Production Dataset Execution")
-    print("=" * 70)
+    resolved_path = resolve_cmaps_dir(cmaps_dir)
+    print("=" * 75)
+    print("Cloud Data Lifecycle Pipeline: NASA Turbofan Jet Engine (CMaps) Execution")
+    print(f"Data Input Path: {resolved_path}")
+    print("=" * 75)
 
     # -------------------------------------------------------------
     # Step 1: Ingestion & FastCDC Chunking
     # -------------------------------------------------------------
-    print("\n[Stage 1/9] Ingesting & Chunking Production Datasets...")
-    discovered = get_dataset_versions()
-    print(f"Discovered {len(discovered)} dataset version groups:")
-    for vname, vpath in discovered.items():
-        print(f"  - {vname}: {vpath}")
+    print("\n[Stage 1/9] Ingesting & Chunking CMaps Telemetry Datasets...")
+    discovered = get_dataset_versions(resolved_path)
+    print(f"Discovered {len(discovered)} dataset version groups / subsets:")
+    for vname, vval in discovered.items():
+        print(f"  - {vname}: {list(vval.keys()) if isinstance(vval, dict) else vval}")
 
-    chunked_df = walk_and_chunk(discovered, max_files=250)
+    chunked_df = walk_and_chunk(discovered, cmaps_dir=resolved_path)
+    if len(chunked_df) == 0:
+        print(f"[ERROR] No objects ingested. Check path: {resolved_path}")
+        return
+
     print(f"-> Ingested {len(chunked_df)} total objects across {chunked_df['version'].nunique()} versions.", flush=True)
     print(f"   Total raw bytes represented: {chunked_df['object_size'].sum():,} bytes", flush=True)
 
@@ -58,9 +66,9 @@ def run_pipeline():
     print(f"-> Mean object redundancy score across corpus: {mean_redundancy:.4f}")
 
     # -------------------------------------------------------------
-    # Step 3: Access Pattern Overlay (Azure Functions 2019)
+    # Step 3: Access Pattern Overlay
     # -------------------------------------------------------------
-    print("\n[Stage 3/9] Applying Access Pattern Features (Empirical Azure Trace)...")
+    print("\n[Stage 3/9] Applying Telemetry Access Pattern Features...")
     access_df = overlay_access_patterns(redundancy_df)
     access_path = os.path.join("data", "processed", "objects_with_access.parquet")
     os.makedirs(os.path.dirname(access_path), exist_ok=True)
@@ -71,7 +79,7 @@ def run_pipeline():
     # -------------------------------------------------------------
     # Step 4: Dependency Graph Analysis
     # -------------------------------------------------------------
-    print("\n[Stage 4/9] Building C/C++ Header Dependency DAG...")
+    print("\n[Stage 4/9] Building Telemetry & Dataset Dependency DAG...")
     G = build_dependency_graph(access_df)
     in_degrees = dict(G.in_degree())
     access_df["num_dependents"] = access_df["object_id"].map(lambda oid: in_degrees.get(oid, 0))
@@ -136,9 +144,9 @@ def run_pipeline():
     evaluate()
 
     elapsed = time.time() - total_start
-    print("\n" + "=" * 70)
+    print("\n" + "=" * 75)
     print(f"Pipeline completed successfully in {elapsed:.2f} seconds!")
-    print("=" * 70)
+    print("=" * 75)
 
 
 if __name__ == "__main__":
