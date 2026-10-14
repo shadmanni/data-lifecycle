@@ -191,6 +191,9 @@ def generate_classification_report_df(
     Returns:
         DataFrame containing formatted columns ['Class / Metric', 'Precision', 'Recall', 'F1-Score', 'Support'].
     """
+    if labels is None and target_names is not None:
+        labels = list(range(len(target_names)))
+
     report_dict = classification_report(
         y_true,
         y_pred,
