@@ -48,16 +48,20 @@ ACTION_SAVINGS_FACTOR = {
 }
 
 
-def calculate_storage_savings(test_df: pd.DataFrame, predicted_labels: np.ndarray) -> Dict[str, float]:
+USD_TO_INR_RATE = 95.0
+
+
+def calculate_storage_savings(test_df: pd.DataFrame, predicted_labels: np.ndarray, usd_to_inr: float = USD_TO_INR_RATE) -> Dict[str, float]:
     """
     Calculate cloud storage cost reduction resulting from predicted actions.
 
     Args:
         test_df: Test dataframe containing 'monthly_storage_cost_usd'.
         predicted_labels: String array or series of predicted policy actions.
+        usd_to_inr: Conversion multiplier from USD to Indian Rupees (INR).
 
     Returns:
-        Dictionary with baseline cost, optimized cost, and savings percentage.
+        Dictionary with baseline cost, optimized cost, savings percentage, and INR equivalents.
     """
     baseline_cost = float(test_df["monthly_storage_cost_usd"].sum())
     savings_factor = pd.Series(predicted_labels, index=test_df.index).map(ACTION_SAVINGS_FACTOR).fillna(0.0)
@@ -65,10 +69,17 @@ def calculate_storage_savings(test_df: pd.DataFrame, predicted_labels: np.ndarra
     optimized_cost = float(cost_after_action.sum())
     
     savings_pct = ((baseline_cost - optimized_cost) / baseline_cost * 100.0) if baseline_cost > 0 else 0.0
+    baseline_cost_inr = baseline_cost * usd_to_inr
+    optimized_cost_inr = optimized_cost * usd_to_inr
+    savings_inr = (baseline_cost - optimized_cost) * usd_to_inr
+
     return {
         "baseline_cost": baseline_cost,
         "optimized_cost": optimized_cost,
         "savings_pct": savings_pct,
+        "baseline_cost_inr": baseline_cost_inr,
+        "optimized_cost_inr": optimized_cost_inr,
+        "savings_inr": savings_inr,
     }
 
 
@@ -161,6 +172,9 @@ def compute_metrics(
         "savings_pct": savings_data.get("savings_pct", 0.0),
         "optimized_cost": savings_data.get("optimized_cost", 0.0),
         "baseline_cost": savings_data.get("baseline_cost", 0.0),
+        "optimized_cost_inr": savings_data.get("optimized_cost_inr", 0.0),
+        "baseline_cost_inr": savings_data.get("baseline_cost_inr", 0.0),
+        "savings_inr": savings_data.get("savings_inr", 0.0),
         "y_pred": y_pred,
         "y_pred_labels": y_pred_labels,
         "y_proba": y_proba,
@@ -345,13 +359,83 @@ def evaluate() -> None:
 
     savings = calculate_storage_savings(test_df, predicted_labels)
 
-    print(f"Baseline (retain everything) monthly cost: ${savings['baseline_cost']:.4f}")
-    print(f"Optimized (your policy) monthly cost:       ${savings['optimized_cost']:.4f}")
-    print(f"Estimated savings:                            {savings['savings_pct']:.1f}%")
+    print(f"Baseline (retain everything) monthly cost: INR {savings['baseline_cost_inr']:,.2f} (${savings['baseline_cost']:.4f} USD)")
+    print(f"Optimized (your policy) monthly cost:       INR {savings['optimized_cost_inr']:,.2f} (${savings['optimized_cost']:.4f} USD)")
+    print(f"Estimated savings:                            {savings['savings_pct']:.1f}% (INR {savings['savings_inr']:,.2f}/month saved)")
 
     print("\nAction distribution recommended by the model:")
     print(test_df["predicted_action"].value_counts())
 
 
+def evaluate_multimodal(
+    pipeline_path: str = "models/multimodal_pipeline.pkl",
+    test_path: str = "data/labels/test.parquet",
+) -> Optional[Dict[str, Any]]:
+    """
+    Evaluates the multimodal pipeline on held-out test data, reporting
+    classification metrics, storage cost savings, and modality comparison.
+    """
+    if not os.path.exists(pipeline_path) or not os.path.exists(test_path):
+        print(f"Multimodal pipeline artifact '{pipeline_path}' or test set '{test_path}' not found.")
+        return None
+
+    pipeline = joblib.load(pipeline_path)
+    test_df = pd.read_parquet(test_path)
+
+    print(f"=== Multimodal Evaluation ({pipeline.fusion_type.upper()} FUSION) ===")
+    preds = pipeline.predict(test_df)
+    y_test = test_df["lifecycle_label"].to_numpy()
+
+    acc = float(accuracy_score(y_test, preds))
+    macro_f1 = float(f1_score(y_test, preds, average="macro", zero_division=0))
+    weighted_f1 = float(f1_score(y_test, preds, average="weighted", zero_division=0))
+
+    savings = calculate_storage_savings(test_df, preds)
+
+    print(f"Multimodal Accuracy   : {acc:.4f} ({acc*100:.2f}%)")
+    print(f"Multimodal Macro F1   : {macro_f1:.4f}")
+    print(f"Multimodal Weighted F1: {weighted_f1:.4f}")
+    print(f"Storage Savings       : {savings['savings_pct']:.1f}%")
+    print(f"Baseline Monthly Cost : INR {savings['baseline_cost_inr']:,.2f} (${savings['baseline_cost']:.4f})")
+    print(f"Optimized Cost        : INR {savings['optimized_cost_inr']:,.2f} (${savings['optimized_cost']:.4f})")
+    print(f"Monthly Savings       : INR {savings['savings_inr']:,.2f}")
+
+    print("\nAction Distribution:")
+    action_counts = pd.Series(preds).value_counts()
+    for act, count in action_counts.items():
+        print(f"  {act.upper():<10}: {count} ({count/len(preds)*100:.1f}%)")
+
+    expert_metrics = {}
+    if pipeline.fusion_type == "late" and pipeline.late_classifier is not None:
+        X_tab, X_text, X_graph = pipeline.transform_modalities(test_df)
+        sub_preds = pipeline.late_classifier.get_modality_predictions(X_tab, X_text, X_graph)
+        print("\n--- Modality Expert Performance Comparison ---")
+        for m_name, (m_preds, _) in sub_preds.items():
+            m_labels = pipeline.label_encoder.inverse_transform(m_preds)
+            m_acc = float(accuracy_score(y_test, m_labels))
+            m_f1 = float(f1_score(y_test, m_labels, average="macro", zero_division=0))
+            expert_metrics[m_name] = {"accuracy": m_acc, "macro_f1": m_f1}
+            print(f"  Expert '{m_name.upper()}': Accuracy={m_acc:.4f}, Macro F1={m_f1:.4f}")
+
+    return {
+        "accuracy": acc,
+        "macro_f1": macro_f1,
+        "weighted_f1": weighted_f1,
+        "savings": savings,
+        "action_counts": action_counts.to_dict(),
+        "expert_metrics": expert_metrics,
+    }
+
+
 if __name__ == "__main__":
-    evaluate()
+    import argparse
+    parser = argparse.ArgumentParser(description="Lifecycle Policy Evaluation")
+    parser.add_argument("--multimodal", action="store_true", help="Evaluate multimodal pipeline")
+    parser.add_argument("--pipeline_path", type=str, default="models/multimodal_pipeline.pkl")
+    parser.add_argument("--test_path", type=str, default="data/labels/test.parquet")
+    args = parser.parse_args()
+
+    if args.multimodal:
+        evaluate_multimodal(pipeline_path=args.pipeline_path, test_path=args.test_path)
+    else:
+        evaluate()

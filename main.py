@@ -23,13 +23,18 @@ from src.features.dependency_graph import build_dependency_graph
 from src.features.cost_estimate import estimate_cost, STORAGE_COST_PER_GB_MONTH
 from src.labels.generate_labels import assign_label
 from src.training.split import time_based_split
-from src.training.train_policy import train
-from src.evaluation.evaluate import evaluate
+from src.training.train_policy import train, train_multimodal
+from src.evaluation.evaluate import evaluate, evaluate_multimodal
+import argparse
 import pandas as pd
 import pickle
 
 
+<<<<<<< HEAD
 def run_pipeline(cmaps_dir: str = None):
+=======
+def run_pipeline(multimodal: bool = False, fusion_type: str = "early"):
+>>>>>>> b142301c11b18853d06d35a4678618f2f90be139
     total_start = time.time()
     resolved_path = resolve_cmaps_dir(cmaps_dir)
     print("=" * 75)
@@ -135,13 +140,19 @@ def run_pipeline(cmaps_dir: str = None):
     # Step 8: XGBoost Model Training
     # -------------------------------------------------------------
     print("\n[Stage 8/9] Training Policy Classifier (XGBoost)...")
-    train()
+    if multimodal:
+        train_multimodal(fusion_type=fusion_type, base_model_name="XGBoost")
+    else:
+        train()
 
     # -------------------------------------------------------------
     # Step 9: Policy Cost & Savings Evaluation
     # -------------------------------------------------------------
     print("\n[Stage 9/9] Evaluating Lifecycle Policy Savings on Held-Out Test Set...")
-    evaluate()
+    if multimodal:
+        evaluate_multimodal()
+    else:
+        evaluate()
 
     elapsed = time.time() - total_start
     print("\n" + "=" * 75)
@@ -150,4 +161,8 @@ def run_pipeline(cmaps_dir: str = None):
 
 
 if __name__ == "__main__":
-    run_pipeline()
+    parser = argparse.ArgumentParser(description="Cloud Data Lifecycle Pipeline: Production Datasets")
+    parser.add_argument("--multimodal", action="store_true", help="Enable multimodal feature integration (Tabular + Text + Graph)")
+    parser.add_argument("--fusion_type", choices=["early", "late"], default="early", help="Fusion strategy: 'early' or 'late'")
+    args = parser.parse_args()
+    run_pipeline(multimodal=args.multimodal, fusion_type=args.fusion_type)
