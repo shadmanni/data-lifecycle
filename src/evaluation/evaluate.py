@@ -367,5 +367,75 @@ def evaluate() -> None:
     print(test_df["predicted_action"].value_counts())
 
 
+def evaluate_multimodal(
+    pipeline_path: str = "models/multimodal_pipeline.pkl",
+    test_path: str = "data/labels/test.parquet",
+) -> Optional[Dict[str, Any]]:
+    """
+    Evaluates the multimodal pipeline on held-out test data, reporting
+    classification metrics, storage cost savings, and modality comparison.
+    """
+    if not os.path.exists(pipeline_path) or not os.path.exists(test_path):
+        print(f"Multimodal pipeline artifact '{pipeline_path}' or test set '{test_path}' not found.")
+        return None
+
+    pipeline = joblib.load(pipeline_path)
+    test_df = pd.read_parquet(test_path)
+
+    print(f"=== Multimodal Evaluation ({pipeline.fusion_type.upper()} FUSION) ===")
+    preds = pipeline.predict(test_df)
+    y_test = test_df["lifecycle_label"].to_numpy()
+
+    acc = float(accuracy_score(y_test, preds))
+    macro_f1 = float(f1_score(y_test, preds, average="macro", zero_division=0))
+    weighted_f1 = float(f1_score(y_test, preds, average="weighted", zero_division=0))
+
+    savings = calculate_storage_savings(test_df, preds)
+
+    print(f"Multimodal Accuracy   : {acc:.4f} ({acc*100:.2f}%)")
+    print(f"Multimodal Macro F1   : {macro_f1:.4f}")
+    print(f"Multimodal Weighted F1: {weighted_f1:.4f}")
+    print(f"Storage Savings       : {savings['savings_pct']:.1f}%")
+    print(f"Baseline Monthly Cost : INR {savings['baseline_cost_inr']:,.2f} (${savings['baseline_cost']:.4f})")
+    print(f"Optimized Cost        : INR {savings['optimized_cost_inr']:,.2f} (${savings['optimized_cost']:.4f})")
+    print(f"Monthly Savings       : INR {savings['savings_inr']:,.2f}")
+
+    print("\nAction Distribution:")
+    action_counts = pd.Series(preds).value_counts()
+    for act, count in action_counts.items():
+        print(f"  {act.upper():<10}: {count} ({count/len(preds)*100:.1f}%)")
+
+    expert_metrics = {}
+    if pipeline.fusion_type == "late" and pipeline.late_classifier is not None:
+        X_tab, X_text, X_graph = pipeline.transform_modalities(test_df)
+        sub_preds = pipeline.late_classifier.get_modality_predictions(X_tab, X_text, X_graph)
+        print("\n--- Modality Expert Performance Comparison ---")
+        for m_name, (m_preds, _) in sub_preds.items():
+            m_labels = pipeline.label_encoder.inverse_transform(m_preds)
+            m_acc = float(accuracy_score(y_test, m_labels))
+            m_f1 = float(f1_score(y_test, m_labels, average="macro", zero_division=0))
+            expert_metrics[m_name] = {"accuracy": m_acc, "macro_f1": m_f1}
+            print(f"  Expert '{m_name.upper()}': Accuracy={m_acc:.4f}, Macro F1={m_f1:.4f}")
+
+    return {
+        "accuracy": acc,
+        "macro_f1": macro_f1,
+        "weighted_f1": weighted_f1,
+        "savings": savings,
+        "action_counts": action_counts.to_dict(),
+        "expert_metrics": expert_metrics,
+    }
+
+
 if __name__ == "__main__":
-    evaluate()
+    import argparse
+    parser = argparse.ArgumentParser(description="Lifecycle Policy Evaluation")
+    parser.add_argument("--multimodal", action="store_true", help="Evaluate multimodal pipeline")
+    parser.add_argument("--pipeline_path", type=str, default="models/multimodal_pipeline.pkl")
+    parser.add_argument("--test_path", type=str, default="data/labels/test.parquet")
+    args = parser.parse_args()
+
+    if args.multimodal:
+        evaluate_multimodal(pipeline_path=args.pipeline_path, test_path=args.test_path)
+    else:
+        evaluate()

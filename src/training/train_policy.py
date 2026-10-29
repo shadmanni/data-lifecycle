@@ -22,13 +22,15 @@ import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 from sklearn.preprocessing import LabelEncoder, StandardScaler
-from sklearn.metrics import classification_report, confusion_matrix, f1_score
+from sklearn.metrics import classification_report, confusion_matrix, f1_score, accuracy_score
 from sklearn.linear_model import SGDClassifier
 
 from src.utils.memory_opt import optimize_dtypes, MemoryTracker, validate_batch_integrity, get_memory_info
 from src.training.incremental_model import IncrementalPipelineWrapper
 from src.training.models import get_model, DEFAULT_HYPERPARAMS
 from src.evaluation.evaluate import compute_metrics, get_feature_importances, FEATURE_COLUMNS
+from src.multimodal.fusion import MultimodalPipeline
+from src.multimodal.graph_encoder import load_or_create_dependency_graph
 
 logging.basicConfig(
     level=logging.INFO,
@@ -319,6 +321,84 @@ def train(
     return clf, le, macro_f1
 
 
+def train_multimodal(
+    fusion_type: str = "early",
+    base_model_name: str = "LightGBM",
+    train_path: str = "data/labels/train.parquet",
+    test_path: str = "data/labels/test.parquet",
+    graph_path: str = "data/processed/dependency_graph.gpickle",
+    models_dir: str = "models",
+    text_dim: int = 16,
+    graph_spectral_dim: int = 4,
+    modality_weights: Tuple[float, float, float] = (0.50, 0.30, 0.20),
+) -> Tuple[MultimodalPipeline, Dict[str, Any], float]:
+    """
+    Trains an end-to-end multimodal lifecycle classification pipeline fusing:
+    1. Tabular Metadata (11 features)
+    2. Textual Semantics (LSA embedding of code comments/headers)
+    3. Structural Graph Topology (DAG metrics and spectral embeddings)
+    """
+    os.makedirs(models_dir, exist_ok=True)
+
+    with MemoryTracker(f"Multimodal Model Training ({fusion_type.upper()} FUSION)"):
+        logger.info(f"Loading datasets for multimodal training from {train_path}...")
+        train_df = optimize_dtypes(pd.read_parquet(train_path))
+        test_df = optimize_dtypes(pd.read_parquet(test_path))
+
+        validate_training_data(train_df, FEATURE_COLUMNS, "lifecycle_label")
+        validate_training_data(test_df, FEATURE_COLUMNS, "lifecycle_label")
+
+        # Load dependency DAG
+        G = load_or_create_dependency_graph(graph_path=graph_path, df=train_df)
+
+        logger.info(f"Initializing MultimodalPipeline (Fusion: {fusion_type.upper()}, Base: {base_model_name})...")
+        pipeline = MultimodalPipeline(
+            fusion_type=fusion_type,
+            base_model_name=base_model_name,
+            text_dim=text_dim,
+            graph_spectral_dim=graph_spectral_dim,
+            modality_weights=modality_weights,
+        )
+
+        start_time = time.time()
+        pipeline.fit(train_df=train_df, G=G, label_col="lifecycle_label")
+        train_duration = time.time() - start_time
+        logger.info(f"Multimodal pipeline training completed in {train_duration:.2f} seconds.")
+
+        # Evaluate on test set
+        logger.info("Evaluating multimodal pipeline on held-out test split...")
+        y_pred = pipeline.predict(test_df)
+        y_test = test_df["lifecycle_label"].to_numpy()
+
+        acc = float(accuracy_score(y_test, y_pred))
+        macro_f1 = float(f1_score(y_test, y_pred, average="macro", zero_division=0))
+        report_dict = classification_report(y_test, y_pred, output_dict=True, zero_division=0)
+
+        print("\n=== Multimodal Classification Report ===")
+        print(classification_report(y_test, y_pred, zero_division=0))
+        print(f"Accuracy: {acc:.4f} | Macro F1: {macro_f1:.4f}\n")
+
+        # Save artifacts
+        pipe_path = os.path.join(models_dir, "multimodal_pipeline.pkl")
+        pipeline.save(pipe_path)
+        print(f"Saved multimodal pipeline to {pipe_path}")
+
+        metrics_summary = {
+            "pipeline_type": "multimodal",
+            "fusion_type": fusion_type,
+            "base_model_name": base_model_name,
+            "training_time_sec": train_duration,
+            "accuracy": acc,
+            "macro_f1": macro_f1,
+            "classes": list(pipeline.label_encoder.classes_),
+            "classification_report": report_dict,
+        }
+        with open(os.path.join(models_dir, "multimodal_metrics.json"), "w") as f:
+            json.dump(metrics_summary, f, indent=2)
+
+    return pipeline, metrics_summary, macro_f1
+
+
 def main():
     parser = argparse.ArgumentParser(description="Memory-Efficient Policy Model Training")
     parser.add_argument(
@@ -331,15 +411,31 @@ def main():
     parser.add_argument("--train_path", type=str, default="data/labels/train.parquet")
     parser.add_argument("--test_path", type=str, default="data/labels/test.parquet")
     parser.add_argument("--models_dir", type=str, default="models")
+    parser.add_argument("--multimodal", action="store_true", help="Enable multimodal feature integration")
+    parser.add_argument(
+        "--fusion_type",
+        choices=["early", "late"],
+        default="early",
+        help="Multimodal fusion strategy: 'early' (feature concatenation) or 'late' (probability stacking)",
+    )
     args = parser.parse_args()
 
-    train(
-        model_type=args.model_type,
-        train_path=args.train_path,
-        test_path=args.test_path,
-        models_dir=args.models_dir,
-        batch_size=args.batch_size,
-    )
+    if args.multimodal:
+        train_multimodal(
+            fusion_type=args.fusion_type,
+            base_model_name="LightGBM" if args.model_type == "lightgbm" else "XGBoost",
+            train_path=args.train_path,
+            test_path=args.test_path,
+            models_dir=args.models_dir,
+        )
+    else:
+        train(
+            model_type=args.model_type,
+            train_path=args.train_path,
+            test_path=args.test_path,
+            models_dir=args.models_dir,
+            batch_size=args.batch_size,
+        )
 
 
 if __name__ == "__main__":

@@ -19,8 +19,8 @@ from src.features.dependency_graph import process_dependencies
 from src.features.cost_estimate import process_costs
 from src.labels.generate_labels import generate_labels
 from src.training.split import run_split
-from src.training.train_policy import train as run_train
-from src.evaluation.evaluate import evaluate as run_eval
+from src.training.train_policy import train as run_train, train_multimodal
+from src.evaluation.evaluate import evaluate as run_eval, evaluate_multimodal
 from src.utils.memory_opt import MemoryTracker, get_memory_info, log_memory
 
 logging.basicConfig(
@@ -37,6 +37,8 @@ def run_pipeline(
     shard_size_mb: float = 100.0,
     skip_data_gen: bool = False,
     batch_size: int = 5000,
+    multimodal: bool = False,
+    fusion_type: str = "early",
 ):
     start_total_time = time.time()
 
@@ -110,18 +112,30 @@ def run_pipeline(
     )
 
     # Stage 8: Model Training with Assertion Checks & Memory Hooks
-    logger.info(f"[STAGE 8/8] Training Policy Model ({model_type.upper()})...")
-    clf, le, f1 = run_train(
-        model_type=model_type,
-        train_path="data/labels/train.parquet",
-        test_path="data/labels/test.parquet",
-        models_dir="models",
-        batch_size=batch_size,
-    )
-
-    # Evaluation
-    logger.info("Executing Storage Cost Savings Evaluation...")
-    run_eval()
+    if multimodal:
+        logger.info(f"[STAGE 8/8] Training Multimodal Policy Model ({fusion_type.upper()} FUSION)...")
+        pipeline, metrics, f1 = train_multimodal(
+            fusion_type=fusion_type,
+            base_model_name="LightGBM" if model_type == "lightgbm" else "XGBoost",
+            train_path="data/labels/train.parquet",
+            test_path="data/labels/test.parquet",
+            models_dir="models",
+        )
+        # Evaluation
+        logger.info("Executing Multimodal Storage Cost Savings Evaluation...")
+        evaluate_multimodal(pipeline_path="models/multimodal_pipeline.pkl", test_path="data/labels/test.parquet")
+    else:
+        logger.info(f"[STAGE 8/8] Training Policy Model ({model_type.upper()})...")
+        clf, le, f1 = run_train(
+            model_type=model_type,
+            train_path="data/labels/train.parquet",
+            test_path="data/labels/test.parquet",
+            models_dir="models",
+            batch_size=batch_size,
+        )
+        # Evaluation
+        logger.info("Executing Storage Cost Savings Evaluation...")
+        run_eval()
 
     elapsed = time.time() - start_total_time
     print("\n================================================================================")
@@ -143,6 +157,10 @@ def main():
                         help="Skip synthetic data generation if already generated")
     parser.add_argument("--batch_size", type=int, default=5000,
                         help="Batch size for incremental learning and shard processing")
+    parser.add_argument("--multimodal", action="store_true",
+                        help="Enable multimodal feature integration (Tabular + Text + Graph)")
+    parser.add_argument("--fusion_type", choices=["early", "late"], default="early",
+                        help="Multimodal fusion strategy: 'early' (feature concatenation) or 'late' (probability stacking)")
     args = parser.parse_args()
 
     run_pipeline(
@@ -152,6 +170,8 @@ def main():
         shard_size_mb=args.shard_size_mb,
         skip_data_gen=args.skip_data_gen,
         batch_size=args.batch_size,
+        multimodal=args.multimodal,
+        fusion_type=args.fusion_type,
     )
 
 
