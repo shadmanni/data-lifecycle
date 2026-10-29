@@ -25,7 +25,7 @@ from src.training.models import (
     DEFAULT_HYPERPARAMS,
     SCALED_MODELS,
 )
-from src.training.train_policy import train_single_model, load_dataset
+from src.training.train_policy import train_single_model, load_dataset, train_multimodal
 from src.evaluation.evaluate import (
     FEATURE_COLUMNS,
     ACTION_SAVINGS_FACTOR,
@@ -33,6 +33,14 @@ from src.evaluation.evaluate import (
     get_feature_importances,
     generate_classification_report_df,
 )
+from src.multimodal.fusion import MultimodalPipeline
+from src.multimodal.diagnostics import (
+    project_embeddings,
+    create_embedding_scatter_plot,
+    analyze_modality_importance,
+    create_modality_contribution_chart,
+)
+from src.multimodal.text_encoder import extract_text_semantics
 
 # -----------------------------------------------------------------------------
 # App Configuration & Constants
@@ -47,6 +55,8 @@ st.set_page_config(
 MODEL_DIR = "models"
 DEFAULT_MODEL_PATH = os.path.join(MODEL_DIR, "lifecycle_policy_model.pkl")
 DEFAULT_ENCODER_PATH = os.path.join(MODEL_DIR, "label_encoder.pkl")
+MULTIMODAL_MODEL_PATH = os.path.join(MODEL_DIR, "multimodal_pipeline.pkl")
+MULTIMODAL_METRICS_PATH = os.path.join(MODEL_DIR, "multimodal_metrics.json")
 CM_PLOT_PATH = os.path.join(MODEL_DIR, "confusion_matrix.png")
 FI_PLOT_PATH = os.path.join(MODEL_DIR, "feature_importance.png")
 
@@ -85,6 +95,15 @@ def initialize_session_state():
         st.session_state.label_encoder = None
     if "classification_reports" not in st.session_state:
         st.session_state.classification_reports = {}
+    if "multimodal_pipeline" not in st.session_state:
+        st.session_state.multimodal_pipeline = None
+
+    # Load existing multimodal pipeline if available
+    if st.session_state.multimodal_pipeline is None and os.path.exists(MULTIMODAL_MODEL_PATH):
+        try:
+            st.session_state.multimodal_pipeline = joblib.load(MULTIMODAL_MODEL_PATH)
+        except Exception:
+            pass
 
     # Load existing default XGBoost model from disk if available
     if not st.session_state.trained_models and os.path.exists(DEFAULT_MODEL_PATH) and os.path.exists(DEFAULT_ENCODER_PATH):
@@ -533,10 +552,11 @@ le = st.session_state.label_encoder
 # -----------------------------------------------------------------------------
 # Tabs Layout: Comparison, Diagnostics, Live Simulator
 # -----------------------------------------------------------------------------
-tab_compare, tab_diagnostics, tab_simulator = st.tabs([
+tab_compare, tab_diagnostics, tab_simulator, tab_multimodal = st.tabs([
     "Model Comparison & Leaderboard",
     "Per-Model Diagnostics & Explainability",
     "Interactive Policy Inference",
+    "Multimodal Diagnostics & Fusion",
 ])
 
 
@@ -843,3 +863,418 @@ with tab_simulator:
                 })
             consensus_df = pd.DataFrame(consensus_rows)
             st.dataframe(consensus_df, width="stretch")
+
+
+# -----------------------------------------------------------------------------
+# TAB 4: Multimodal Diagnostics, Embedding Projection & Live Fusion Simulator
+# -----------------------------------------------------------------------------
+with tab_multimodal:
+    st.subheader("Multimodal Feature Integration & Diagnostics")
+    st.caption(
+        "Fuses Tabular Metadata (11 features), Textual Semantics (16-D LSA comments/docstrings/headers), "
+        "and Structural Graph Topology (DAG PageRank, degree ratios & spectral embeddings)."
+    )
+
+    # Architectural Overview Banner
+    arch_col1, arch_col2, arch_col3 = st.columns(3)
+    with arch_col1:
+        st.markdown(
+            """
+            <div style="background: rgba(59, 130, 246, 0.1); border: 1px solid rgba(59, 130, 246, 0.3); border-radius: 8px; padding: 14px;">
+                <h4 style="margin: 0 0 6px 0; color: #60a5fa;">📊 Modality 1: Tabular</h4>
+                <p style="font-size: 0.85rem; margin: 0; color: #cbd5e1;">
+                    11 engineered features: size, redundancy score, access frequencies (7d/30d/90d),
+                    recency, age, dependents count, and baseline hot storage cost.
+                </p>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+    with arch_col2:
+        st.markdown(
+            """
+            <div style="background: rgba(16, 185, 129, 0.1); border: 1px solid rgba(16, 185, 129, 0.3); border-radius: 8px; padding: 14px;">
+                <h4 style="margin: 0 0 6px 0; color: #34d399;">📝 Modality 2: Text Semantics</h4>
+                <p style="font-size: 0.85rem; margin: 0; color: #cbd5e1;">
+                    Parses code comments, docstrings, include headers, and README text via TF-IDF
+                    and Latent Semantic Analysis (TruncatedSVD, 16 dense dimensions).
+                </p>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+    with arch_col3:
+        st.markdown(
+            """
+            <div style="background: rgba(245, 158, 11, 0.1); border: 1px solid rgba(245, 158, 11, 0.3); border-radius: 8px; padding: 14px;">
+                <h4 style="margin: 0 0 6px 0; color: #fbbf24;">🕸️ Modality 3: Graph Topology</h4>
+                <p style="font-size: 0.85rem; margin: 0; color: #cbd5e1;">
+                    Dependency DAG metrics: PageRank, in/out degrees, clustering coefficient,
+                    coreness number, and 4-D low-rank spectral network embeddings.
+                </p>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+
+    st.markdown("---")
+
+    # Multimodal Pipeline Training / Configuration Expander
+    mm_pipe: Optional[MultimodalPipeline] = st.session_state.multimodal_pipeline
+
+    with st.expander("Configure & Train Multimodal Pipeline", expanded=(mm_pipe is None)):
+        cfg_col1, cfg_col2, cfg_col3 = st.columns(3)
+        with cfg_col1:
+            fusion_strategy_choice = st.selectbox(
+                "Fusion Strategy",
+                ["Early Fusion (Feature Concatenation)", "Late Fusion (Probability Stacking & Blending)"],
+                index=0,
+                help="Early: Concatenates all modalities into a unified vector. Late: Trains modality experts and stacks probabilities.",
+            )
+            fusion_type_param = "early" if "Early" in fusion_strategy_choice else "late"
+
+        with cfg_col2:
+            base_mm_model = st.selectbox(
+                "Base Learner / Classifier",
+                ["LightGBM", "XGBoost", "Random Forest"],
+                index=0,
+                help="Classifier architecture used for fused feature training or tabular expert.",
+            )
+
+        with cfg_col3:
+            text_dim_slider = st.slider("Text LSA Embedding Dimensions", 8, 32, 16, step=4)
+            graph_spec_slider = st.slider("Graph Spectral Dimensions", 2, 8, 4, step=2)
+
+        if st.button("Train Multimodal Pipeline", type="primary", width="stretch"):
+            with st.spinner("Extracting text semantics, graph topology, and training multimodal pipeline..."):
+                try:
+                    new_mm_pipe, mm_metrics, mm_f1 = train_multimodal(
+                        fusion_type=fusion_type_param,
+                        base_model_name=base_mm_model,
+                        train_path="data/labels/train.parquet",
+                        test_path="data/labels/test.parquet",
+                        models_dir=MODEL_DIR,
+                        text_dim=text_dim_slider,
+                        graph_spectral_dim=graph_spec_slider,
+                    )
+                    st.session_state.multimodal_pipeline = new_mm_pipe
+                    st.success(f"Multimodal Pipeline trained successfully! Macro F1: {mm_f1:.4f}")
+                    st.rerun()
+                except Exception as ex:
+                    st.error(f"Training failed: {ex}")
+
+    if mm_pipe is None:
+        st.info("No multimodal pipeline loaded. Click **Train Multimodal Pipeline** above to initialize.")
+        st.stop()
+
+    # Active Pipeline KPI Metrics
+    st.markdown("### Active Multimodal Pipeline Status")
+    kpi_m1, kpi_m2, kpi_m3, kpi_m4, kpi_m5 = st.columns(5)
+    with kpi_m1:
+        st.metric("Fusion Mode", f"{mm_pipe.fusion_type.upper()} FUSION", mm_pipe.base_model_name)
+    with kpi_m2:
+        st.metric("Total Fused Dimensions", f"{len(mm_pipe.feature_names_fused)} Dims", f"11 Tab + {mm_pipe.text_dim} Text + {len(mm_pipe.graph_encoder.feature_names)} Graph")
+    with kpi_m3:
+        st.metric("Vocabulary Features", f"{mm_pipe.text_encoder.max_features}", f"{mm_pipe.text_dim} LSA Components")
+    with kpi_m4:
+        st.metric("Graph Spectral Dim", f"{mm_pipe.graph_spectral_dim} Dims", "DAG Projected")
+    with kpi_m5:
+        st.metric("Lifecycle Actions", f"{len(mm_pipe.label_encoder.classes_)} Classes", "Full Coverage")
+
+    st.markdown("---")
+
+    # Modality Contribution Analysis
+    st.markdown("### Modality Contribution & Explainability")
+    mod_col1, mod_col2 = st.columns([3, 2])
+
+    with mod_col1:
+        modality_importance = analyze_modality_importance(mm_pipe)
+        st.plotly_chart(create_modality_contribution_chart(modality_importance), use_container_width=True)
+
+    with mod_col2:
+        st.markdown("#### Text Semantics Keywords")
+        st.caption("Top influential vocabulary terms learned by the LSA text encoder.")
+        top_terms_dict = mm_pipe.text_encoder.get_top_terms_per_component(n_top_terms=4)
+        if top_terms_dict:
+            term_rows = []
+            for comp_name, terms_list in list(top_terms_dict.items())[:6]:
+                terms_str = ", ".join([f"`{t[0]}`" for t in terms_list])
+                term_rows.append({"Component": comp_name, "Top Semantic Keywords": terms_str})
+            st.dataframe(pd.DataFrame(term_rows), width="stretch", hide_index=True)
+        else:
+            st.info("Keyword mapping available once text encoder is fitted.")
+
+    st.markdown("---")
+
+    # Embedding Projection Section (PCA & t-SNE)
+    st.markdown("### 🌐 Multimodal Embedding Space Visualizer")
+    st.caption("Project 35+ dimensional multimodal embeddings into 2D or 3D interactive feature space colored by lifecycle policy action.")
+
+    proj_ctrl1, proj_ctrl2, proj_ctrl3 = st.columns(3)
+    with proj_ctrl1:
+        proj_method = st.selectbox("Projection Method", ["PCA", "t-SNE"], index=0, key="proj_method_select")
+    with proj_ctrl2:
+        proj_dims = st.radio("Dimensions", [2, 3], index=0, horizontal=True, key="proj_dims_radio")
+    with proj_ctrl3:
+        sample_pts = st.slider("Subsample Count", 200, 1500, 800, step=100, help="Number of test points to project for sub-second responsiveness.")
+
+    with st.spinner(f"Computing {proj_method} {proj_dims}D projection across multimodal feature space..."):
+        try:
+            # Transform test dataset into multimodal embeddings
+            X_tab_t, X_text_t, X_graph_t = mm_pipe.transform_modalities(test_df)
+            X_fused_test = np.hstack([X_tab_t, X_text_t, X_graph_t]).astype(np.float32)
+
+            coords, var_ratio, sample_idxs = project_embeddings(
+                X_fused_test,
+                method=proj_method,
+                n_components=proj_dims,
+                sample_size=sample_pts,
+            )
+
+            sampled_labels = test_df["lifecycle_label"].iloc[sample_idxs].tolist()
+            sampled_df = test_df.iloc[sample_idxs].reset_index(drop=True)
+
+            scatter_fig = create_embedding_scatter_plot(
+                coords=coords,
+                labels=sampled_labels,
+                hover_df=sampled_df,
+                method_name=proj_method,
+                n_components=proj_dims,
+            )
+            st.plotly_chart(scatter_fig, use_container_width=True)
+
+            if var_ratio is not None:
+                st.caption(
+                    f"**PCA Explained Variance**: Component 1: {var_ratio[0]:.1%} | Component 2: {var_ratio[1]:.1%}"
+                    + (f" | Component 3: {var_ratio[2]:.1%}" if len(var_ratio) > 2 else "")
+                    + f" (Total Explained: {sum(var_ratio):.1%})"
+                )
+        except Exception as e_proj:
+            st.error(f"Error computing projection: {e_proj}")
+
+    st.markdown("---")
+
+    # Live Multimodal Simulator Section
+    st.markdown("### 🧪 Live Multimodal Policy Inference & Decision Simulator")
+    st.caption("Simulate how changing code comments, graph topology, or tabular metrics impacts the lifecycle recommendation.")
+
+    # Preset Scenarios
+    preset_scenario = st.selectbox(
+        "Choose a Realistic Scenario Preset (or configure manually)",
+        [
+            "Custom (Manual Input)",
+            "1. Deprecated utility module slated for removal (Candidate: DELETE)",
+            "2. Highly redundant shared library with few dependencies (Candidate: DEDUP)",
+            "3. Critical kernel scheduler lock module in hot execution path (Candidate: RETAIN)",
+            "4. Cold backup logs & configuration older than 6 months (Candidate: ARCHIVE)",
+            "5. Highly compressible data table with steady monthly reads (Candidate: COMPRESS)",
+        ],
+        index=0,
+        key="mm_scenario_preset",
+    )
+
+    # Preset values map
+    if "1. Deprecated" in preset_scenario:
+        p_red = 0.90
+        p_deps = 0
+        p_age = 420
+        p_f7 = 0
+        p_f30 = 0
+        p_f90 = 0
+        p_days = 120
+        p_text = "// Deprecated legacy cache utility module slated for removal in v2.4\n/* Obsolete routine - no active callers */\n#include <stdio.h>"
+        p_in_deg = 0
+        p_out_deg = 1
+        p_ratio = 3.2
+    elif "2. Highly redundant" in preset_scenario:
+        p_red = 0.78
+        p_deps = 1
+        p_age = 150
+        p_f7 = 1
+        p_f30 = 5
+        p_f90 = 12
+        p_days = 15
+        p_text = "// Shared duplicate helper routines for data serialization\n#include <stdlib.h>\n#include <string.h>"
+        p_in_deg = 1
+        p_out_deg = 2
+        p_ratio = 2.1
+    elif "3. Critical kernel" in preset_scenario:
+        p_red = 0.05
+        p_deps = 28
+        p_age = 300
+        p_f7 = 18
+        p_f30 = 95
+        p_f90 = 340
+        p_days = 0
+        p_text = "/* Core kernel scheduler spinlock synchronization primitives */\n#include <linux/spinlock.h>\n#include <linux/sched.h>\nvoid acquire_kernel_mutex();"
+        p_in_deg = 28
+        p_out_deg = 4
+        p_ratio = 1.6
+    elif "4. Cold backup" in preset_scenario:
+        p_red = 0.20
+        p_deps = 0
+        p_age = 280
+        p_f7 = 0
+        p_f30 = 0
+        p_f90 = 1
+        p_days = 110
+        p_text = "# System execution audit logs and historical archive snapshot\n# Generated automatically on system shutdown\n# DO NOT MODIFY MANUALLY"
+        p_in_deg = 0
+        p_out_deg = 0
+        p_ratio = 2.8
+    elif "5. Highly compressible" in preset_scenario:
+        p_red = 0.15
+        p_deps = 2
+        p_age = 90
+        p_f7 = 1
+        p_f30 = 12
+        p_f90 = 45
+        p_days = 4
+        p_text = "// Analytical reporting dataset payload buffer with repetitive textual records\n#include <zlib.h>\nstruct report_payload_t buffer;"
+        p_in_deg = 2
+        p_out_deg = 1
+        p_ratio = 4.2
+    else:
+        p_red = 0.35
+        p_deps = 1
+        p_age = 60
+        p_f7 = 2
+        p_f30 = 8
+        p_f90 = 24
+        p_days = 5
+        p_text = "// Application helper routines\n#include <stdio.h>\nvoid process_payload();"
+        p_in_deg = 1
+        p_out_deg = 2
+        p_ratio = 2.4
+
+    sim_m_col1, sim_m_col2, sim_m_col3 = st.columns(3)
+
+    with sim_m_col1:
+        st.markdown("#### 📊 Modality 1: Tabular Metadata")
+        sim_red = st.slider("Redundancy score", 0.0, 1.0, float(p_red), step=0.01, key="mm_sim_red")
+        sim_size = st.number_input("Object size (bytes)", min_value=1, value=65536, step=4096, key="mm_sim_size")
+        sim_age = st.slider("Object age (days)", 0, 1000, int(p_age), step=1, key="mm_sim_age")
+        sim_f7 = st.slider("Accesses in last 7 days", 0, 50, int(p_f7), step=1, key="mm_sim_f7")
+        sim_f30 = st.slider("Accesses in last 30 days", 0, 200, int(p_f30), step=1, key="mm_sim_f30")
+        sim_f90 = st.slider("Accesses in last 90 days", 0, 500, int(p_f90), step=1, key="mm_sim_f90")
+        sim_days_last = st.slider("Days since last access", 0, 365, int(p_days), step=1, key="mm_sim_days_last")
+        sim_cost_inr = st.number_input("Monthly Storage Cost (INR, ₹)", min_value=0.0, value=0.15, step=0.02, format="%.2f", key="mm_sim_cost_inr")
+
+    with sim_m_col2:
+        st.markdown("#### 📝 Modality 2: Text Semantics")
+        sim_text = st.text_area(
+            "Source Code Comments, Docstrings, or Headers",
+            value=p_text,
+            height=210,
+            key="mm_sim_text",
+            help="Type or paste C/C++/Python comments, function signatures, or docstrings.",
+        )
+        sim_rel_path = st.text_input("Simulated Relative Path", value="kernel/sched/core.c", key="mm_sim_path")
+
+    with sim_m_col3:
+        st.markdown("#### 🕸️ Modality 3: Graph Topology")
+        sim_in_deg = st.slider("In-Degree (Dependent modules)", 0, 50, int(p_in_deg), step=1, key="mm_sim_in_deg")
+        sim_out_deg = st.slider("Out-Degree (Included headers)", 0, 30, int(p_out_deg), step=1, key="mm_sim_out_deg")
+        sim_pr = st.slider("PageRank Centrality proxy", 0.0001, 0.1000, float(max(0.001, p_in_deg * 0.003)), step=0.0010, format="%.4f", key="mm_sim_pr")
+        sim_clust = st.slider("Clustering coefficient", 0.0, 1.0, 0.15, step=0.05, key="mm_sim_clust")
+        sim_ratio = st.slider("Compression ratio", 1.0, 10.0, float(p_ratio), step=0.1, key="mm_sim_ratio")
+
+    st.markdown("---")
+
+    if st.button("Predict Multimodal Lifecycle Action", type="primary", width="stretch", key="mm_predict_btn"):
+        # Convert INR cost to USD for model feature scaling
+        sim_cost_usd = sim_cost_inr / USD_TO_INR_RATE
+
+        tab_input_dict = {
+            "redundancy_score": sim_red,
+            "object_size": sim_size,
+            "object_age_days": sim_age,
+            "access_freq_7d": sim_f7,
+            "access_freq_30d": sim_f30,
+            "access_freq_90d": sim_f90,
+            "days_since_last_access": sim_days_last,
+            "num_dependents": sim_in_deg,
+            "compression_ratio": sim_ratio,
+            "compute_time_sec": float(sim_size / (50.0 * 1024 * 1024)),
+            "monthly_storage_cost_usd": sim_cost_usd,
+        }
+
+        graph_input_dict = {
+            "in_degree": sim_in_deg,
+            "out_degree": sim_out_deg,
+            "pagerank": sim_pr,
+            "clustering": sim_clust,
+            "core_number": 1.0,
+        }
+
+        with st.spinner("Executing multimodal forward inference across all 3 encoders..."):
+            sim_res = mm_pipe.predict_single(
+                tabular_dict=tab_input_dict,
+                source_code_or_comment=sim_text,
+                graph_dict=graph_input_dict,
+                relative_path=sim_rel_path,
+            )
+
+        recommended_action = sim_res["action"]
+        savings_factor = sim_res["savings_factor"]
+        projected_savings_inr = sim_cost_inr * savings_factor
+
+        st.success(
+            f"### Recommended Multimodal Action: **{recommended_action.upper()}** "
+            f"(Confidence: {sim_res['confidence']:.2%})"
+        )
+        st.info(
+            f"💰 Projected Cost Reduction: **{savings_factor * 100:.1f}%** | "
+            f"Monthly Savings: **₹{projected_savings_inr:,.2f}** (Baseline ₹{sim_cost_inr:,.2f} / month)"
+        )
+
+        res_col1, res_col2 = st.columns([3, 2])
+        with res_col1:
+            prob_df = pd.DataFrame([
+                {"Action": k.upper(), "Probability": v}
+                for k, v in sim_res["probabilities"].items()
+            ]).sort_values("Probability", ascending=False)
+            st.plotly_chart(create_probability_distribution_chart(prob_df), use_container_width=True)
+
+        with res_col2:
+            st.markdown("#### Probability Confidence Breakdown")
+            st.dataframe(prob_df.style.format({"Probability": "{:.2%}"}), width="stretch")
+
+        # Modality Decision Consensus Breakdown
+        st.markdown("---")
+        st.markdown("#### 🤝 Modality Decision Consensus & Voting Breakdown")
+        st.caption("How each distinct modality expert individually voted on this object:")
+
+        mod_breakdown = sim_res.get("modality_breakdown", {})
+        consensus_items = []
+
+        mod_titles = {
+            "tabular": "📊 Tabular Metadata Expert",
+            "text": "📝 Textual Semantics Expert",
+            "graph": "🕸️ Graph Topology Expert",
+        }
+
+        for m_key, m_info in mod_breakdown.items():
+            consensus_items.append({
+                "Modality Expert": mod_titles.get(m_key, m_key.title()),
+                "Voted Action": m_info["action"].upper(),
+                "Confidence": f"{m_info['confidence']:.2%}",
+                "Agreement with Final": "✅ Yes" if m_info["action"].lower() == recommended_action.lower() else "⚠️ Disagreed",
+            })
+
+        # Append Early vs Late comparison
+        consensus_items.append({
+            "Modality Expert": "⚡ Early Fusion (Concatenation)",
+            "Voted Action": sim_res["early_action"].upper(),
+            "Confidence": f"{sim_res['early_confidence']:.2%}",
+            "Agreement with Final": "✅ Yes" if sim_res["early_action"].lower() == recommended_action.lower() else "⚠️ Disagreed",
+        })
+        consensus_items.append({
+            "Modality Expert": "🥞 Late Fusion (Probability Stacking)",
+            "Voted Action": sim_res["late_action"].upper(),
+            "Confidence": f"{sim_res['late_confidence']:.2%}",
+            "Agreement with Final": "✅ Yes" if sim_res["late_action"].lower() == recommended_action.lower() else "⚠️ Disagreed",
+        })
+
+        st.dataframe(pd.DataFrame(consensus_items), width="stretch", hide_index=True)
+

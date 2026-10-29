@@ -21,13 +21,14 @@ from src.features.dependency_graph import build_dependency_graph
 from src.features.cost_estimate import estimate_cost, STORAGE_COST_PER_GB_MONTH
 from src.labels.generate_labels import assign_label
 from src.training.split import time_based_split
-from src.training.train_policy import train
-from src.evaluation.evaluate import evaluate
+from src.training.train_policy import train, train_multimodal
+from src.evaluation.evaluate import evaluate, evaluate_multimodal
+import argparse
 import pandas as pd
 import pickle
 
 
-def run_pipeline():
+def run_pipeline(multimodal: bool = False, fusion_type: str = "early"):
     total_start = time.time()
     print("=" * 70)
     print("Cloud Data Lifecycle Pipeline: Production Dataset Execution")
@@ -127,13 +128,19 @@ def run_pipeline():
     # Step 8: XGBoost Model Training
     # -------------------------------------------------------------
     print("\n[Stage 8/9] Training Policy Classifier (XGBoost)...")
-    train()
+    if multimodal:
+        train_multimodal(fusion_type=fusion_type, base_model_name="XGBoost")
+    else:
+        train()
 
     # -------------------------------------------------------------
     # Step 9: Policy Cost & Savings Evaluation
     # -------------------------------------------------------------
     print("\n[Stage 9/9] Evaluating Lifecycle Policy Savings on Held-Out Test Set...")
-    evaluate()
+    if multimodal:
+        evaluate_multimodal()
+    else:
+        evaluate()
 
     elapsed = time.time() - total_start
     print("\n" + "=" * 70)
@@ -142,4 +149,8 @@ def run_pipeline():
 
 
 if __name__ == "__main__":
-    run_pipeline()
+    parser = argparse.ArgumentParser(description="Cloud Data Lifecycle Pipeline: Production Datasets")
+    parser.add_argument("--multimodal", action="store_true", help="Enable multimodal feature integration (Tabular + Text + Graph)")
+    parser.add_argument("--fusion_type", choices=["early", "late"], default="early", help="Fusion strategy: 'early' or 'late'")
+    args = parser.parse_args()
+    run_pipeline(multimodal=args.multimodal, fusion_type=args.fusion_type)
